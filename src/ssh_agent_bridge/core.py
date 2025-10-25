@@ -1,0 +1,655 @@
+"""SSH Agent Bridge Core Implementation.
+
+This module contains the main SSHService class that provides high-level SSH
+session management for AI agents.
+"""
+
+import asyncio
+import uuid
+from typing import Dict, Optional, Union
+import asyncssh
+from .types import ConnectionInfo, SessionInfo, CommandResult, PartialResult
+from .exceptions import (
+    SSHServiceError,
+    ConnectionError,
+    SessionError,
+    CommandError,
+    TimeoutError,
+)
+
+
+class SSHService:
+    """Main service class for SSH session management.
+
+    Provides connection pooling, session lifecycle management, and command execution
+    with marker-based completion detection for AI agent use cases.
+    """
+
+    def __init__(self):
+        """Initialize the SSH service."""
+        self._connections: Dict[str, ConnectionInfo] = {}
+        self._sessions: Dict[str, SessionInfo] = {}
+        self._connection_locks: Dict[str, asyncio.Lock] = {}
+        self._session_locks: Dict[str, asyncio.Lock] = {}
+
+    async def create_session(
+        self,
+        agent_id: str,
+        host: str,
+        username: str,
+        password: Optional[str] = None,
+        private_key: Optional[str] = None,
+        port: int = 22,
+        term_type: str = "xterm",
+    ) -> str:
+        """Create a new SSH session for the specified agent and host.
+
+        Args:
+            agent_id: Unique identifier for the agent
+            host: SSH host to connect to
+            username: SSH username
+            password: SSH password (optional if using key auth)
+            private_key: Path to private key file (optional if using password auth)
+            port: SSH port (default: 22)
+            term_type: Terminal type for PTY (default: xterm)
+
+        Returns:
+            Session ID for subsequent operations
+
+        Raises:
+            ConnectionError: If connection fails
+            SSHServiceError: For other SSH-related errors
+        """
+        # Ensure connection exists
+        connection_info = await self._ensure_connection(
+            agent_id, host, username, password, private_key, port
+        )
+
+        # Generate unique session ID
+        session_id = str(uuid.uuid4())
+
+        try:
+            # Create PTY shell session
+            process = await connection_info.connection.create_process(
+                term_type=term_type, pty_requested=True
+            )
+
+            # Create session info with synchronization primitives
+            session_info = SessionInfo(
+                session_id=session_id,
+                agent_id=agent_id,
+                connection_info=connection_info,
+                process=process,
+                buffer="",
+                markers=set(),
+                reader_task=None,  # Will be set after creation
+                lock=asyncio.Lock(),
+                condition=asyncio.Condition(),
+                status="active",
+            )
+
+            # Start background reader task
+            reader_task = asyncio.create_task(self._read_stream_loop(session_id))
+            session_info.reader_task = reader_task
+
+            # Store session
+            self._sessions[session_id] = session_info
+
+            # Ensure per-session lock exists
+            if session_id not in self._session_locks:
+                self._session_locks[session_id] = asyncio.Lock()
+
+            return session_id
+
+        except asyncssh.Error as e:
+            raise ConnectionError(f"Failed to create PTY session on {host}: {e}") from e
+        except Exception as e:
+            raise SSHServiceError(f"Unexpected error creating session: {e}") from e
+
+    async def end_session(self, session_id: str) -> None:
+        """End the specified SSH session and clean up resources.
+
+        Args:
+            session_id: Session ID to end
+
+        Raises:
+            SessionError: If session doesn't exist or is already closed
+        """
+        session = self._sessions.get(session_id)
+        if not session:
+            raise SessionError(f"Session {session_id} does not exist")
+        if session.status != "active":
+            raise SessionError(
+                f"Session {session_id} is already closed (status: {session.status})"
+            )
+
+        # Mark session as closing
+        session.status = "closed"
+
+        try:
+            # Cancel reader task
+            if session.reader_task and not session.reader_task.done():
+                session.reader_task.cancel()
+                try:
+                    await session.reader_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Close the process
+            if session.process:
+                try:
+                    await session.process.close()
+                except Exception:
+                    pass  # Process may already be closed
+
+        finally:
+            # Clean up session data
+            self._sessions.pop(session_id, None)
+            self._session_locks.pop(session_id, None)
+
+    async def run_command(
+        self, session_id: str, command: str, short_timeout: float = 10.0
+    ) -> Union[CommandResult, PartialResult]:
+        """Execute a command in the specified session.
+
+        Args:
+            session_id: Session ID to run command in
+            command: Command to execute
+            short_timeout: Timeout in seconds to wait for completion
+
+        Returns:
+            CommandResult if completed, PartialResult if timed out
+
+        Raises:
+            SessionError: If session doesn't exist or is closed
+            CommandError: If command execution fails
+            TimeoutError: If operation times out
+        """
+        # Validate session
+        session = self._sessions.get(session_id)
+        if not session:
+            raise SessionError(f"Session {session_id} does not exist")
+        if session.status != "active":
+            raise SessionError(
+                f"Session {session_id} is not active (status: {session.status})"
+            )
+
+        # Use session lock to serialize commands
+        async with self._session_locks[session_id]:
+            # Generate unique marker
+            marker = self._make_marker()
+
+            # Create command with marker
+            marked_command = f"{command} && echo {marker} $?\n"
+
+            # Track marker for this session
+            session.markers.add(marker)
+
+            # Get current buffer position to avoid re-processing old output
+            start_index = len(session.buffer)
+
+            try:
+                # Send command to session
+                session.process.stdin.write(marked_command)
+                await session.process.stdin.drain()
+
+                # Wait for marker with timeout
+                return await self._wait_for_marker(
+                    session, marker, start_index, short_timeout
+                )
+
+            except Exception as e:
+                # Clean up marker on error
+                session.markers.discard(marker)
+                raise CommandError(f"Failed to execute command: {e}") from e
+
+    async def _wait_for_marker(
+        self, session: SessionInfo, marker: str, start_index: int, timeout: float
+    ) -> Union[CommandResult, PartialResult]:
+        """Wait for a marker to appear in the session buffer.
+
+        Args:
+            session: Session info
+            marker: Marker to wait for
+            start_index: Buffer index to start searching from
+            timeout: Timeout in seconds
+
+        Returns:
+            CommandResult if marker found, PartialResult if timeout
+        """
+        end_time = asyncio.get_event_loop().time() + timeout
+
+        while True:
+            async with session.condition:
+                # Check if marker is in buffer
+                buffer_slice = session.buffer[start_index:]
+                marker_index = buffer_slice.find(marker)
+
+                if marker_index >= 0:
+                    # Found marker! Parse result
+                    marker_pos = start_index + marker_index
+                    output_before_marker = session.buffer[:marker_pos]
+
+                    # Extract exit code from marker line
+                    marker_line_start = session.buffer.rfind("\n", 0, marker_pos) + 1
+                    marker_line = session.buffer[
+                        marker_line_start : marker_pos + len(marker)
+                    ]
+                    parts = marker_line.strip().split()
+                    exit_code = int(parts[-1]) if len(parts) >= 2 else 1
+
+                    # Clean up marker
+                    session.markers.discard(marker)
+
+                    return CommandResult(
+                        status="completed",
+                        exit_code=exit_code,
+                        stdout=output_before_marker,
+                        stderr=None,  # PTY combines stdout/stderr
+                    )
+
+                # Check timeout
+                remaining_time = end_time - asyncio.get_event_loop().time()
+                if remaining_time <= 0:
+                    # Timeout - return partial result
+                    return PartialResult(
+                        status="partial", stdout=buffer_slice, pending_marker=marker
+                    )
+
+                # Wait for more data or timeout
+                try:
+                    await asyncio.wait_for(
+                        session.condition.wait(), timeout=min(remaining_time, 0.1)
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+    async def get_remaining_output(
+        self, session_id: str, pending_marker: str, timeout: float = 30.0
+    ) -> CommandResult:
+        """Wait for remaining output from a previously timed-out command.
+
+        Args:
+            session_id: Session ID to check
+            pending_marker: Marker from partial result
+            timeout: Timeout in seconds to wait
+
+        Returns:
+            CommandResult with final exit code and output
+
+        Raises:
+            SessionError: If session doesn't exist or is closed
+            TimeoutError: If marker not found within timeout
+        """
+        # Validate session
+        session = self._sessions.get(session_id)
+        if not session:
+            raise SessionError(f"Session {session_id} does not exist")
+        if session.status != "active":
+            raise SessionError(
+                f"Session {session_id} is not active (status: {session.status})"
+            )
+
+        # Validate marker is expected for this session
+        if pending_marker not in session.markers:
+            raise SessionError(
+                f"Marker {pending_marker} not found in session {session_id}"
+            )
+
+        # Use session lock to serialize operations
+        async with self._session_locks[session_id]:
+            # Wait for marker from beginning of buffer (since we don't know where partial result left off)
+            result = await self._wait_for_marker(session, pending_marker, 0, timeout)
+
+            if isinstance(result, PartialResult):
+                # Still didn't find marker - timeout
+                raise TimeoutError(
+                    f"Marker {pending_marker} not found within {timeout} seconds"
+                )
+
+            return result
+
+    async def send_input(self, session_id: str, input_text: str) -> None:
+        """Send input text to the stdin of the specified session.
+
+        Args:
+            session_id: Session ID to send input to
+            input_text: Text to send (will be followed by newline)
+
+        Raises:
+            SessionError: If session doesn't exist or is closed
+        """
+        # Validate session
+        session = self._sessions.get(session_id)
+        if not session:
+            raise SessionError(f"Session {session_id} does not exist")
+        if session.status != "active":
+            raise SessionError(
+                f"Session {session_id} is not active (status: {session.status})"
+            )
+
+        # Send input with newline
+        input_with_newline = input_text + "\n"
+        session.process.stdin.write(input_with_newline)
+        await session.process.stdin.drain()
+
+    async def send_signal(self, session_id: str, signal: Union[str, int]) -> None:
+        """Send a signal to the process in the specified session.
+
+        Args:
+            session_id: Session ID to send signal to
+            signal: Signal name (e.g., 'SIGINT') or number
+
+        Raises:
+            SessionError: If session doesn't exist or is closed
+            SSHServiceError: If signal sending fails
+        """
+        # Validate session
+        session = self._sessions.get(session_id)
+        if not session:
+            raise SessionError(f"Session {session_id} does not exist")
+        if session.status != "active":
+            raise SessionError(
+                f"Session {session_id} is not active (status: {session.status})"
+            )
+
+        # Resolve signal name to number
+        if isinstance(signal, str):
+            # Handle common signal names
+            signal_map = {
+                "SIGINT": 2,
+                "SIGTERM": 15,
+                "SIGKILL": 9,
+                "SIGHUP": 1,
+                "SIGSTOP": 17,
+                "SIGCONT": 18,
+            }
+            if signal not in signal_map:
+                raise SSHServiceError(f"Unsupported signal name: {signal}")
+            signal_num = signal_map[signal]
+        else:
+            signal_num = signal
+
+        try:
+            # Try to send signal using asyncssh
+            await session.process.send_signal(signal_num)
+        except (AttributeError, asyncssh.Error):
+            # Fallback: try to kill the process if send_signal not supported
+            try:
+                session.process.kill()
+            except Exception as e:
+                raise SSHServiceError(
+                    f"Failed to send signal {signal} or kill process: {e}"
+                ) from e
+
+    async def run_ephemeral(
+        self,
+        agent_id: str,
+        host: str,
+        command: str,
+        username: str,
+        password: Optional[str] = None,
+        private_key: Optional[str] = None,
+        port: int = 22,
+        timeout: float = 10.0,
+    ) -> CommandResult:
+        """Run a single command without creating a persistent session.
+
+        Args:
+            agent_id: Unique identifier for the agent
+            host: SSH host to connect to
+            command: Command to execute
+            username: SSH username
+            password: SSH password (optional)
+            private_key: Path to private key file (optional)
+            port: SSH port (default: 22)
+            timeout: Timeout in seconds
+
+        Returns:
+            CommandResult with exit code, stdout, and stderr
+
+        Raises:
+            ConnectionError: If connection fails
+            CommandError: If command execution fails
+            TimeoutError: If operation times out
+        """
+        # Ensure connection exists
+        connection_info = await self._ensure_connection(
+            agent_id, host, username, password, private_key, port
+        )
+
+        try:
+            # Create non-PTY process for single command
+            process = await connection_info.connection.create_process(command)
+
+            # Wait for completion with timeout
+            try:
+                await asyncio.wait_for(process.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                # Kill process on timeout
+                try:
+                    process.kill()
+                except:
+                    pass
+                raise TimeoutError(f"Command timed out after {timeout} seconds")
+
+            # Get exit code
+            exit_code = process.returncode or 0
+
+            # Read stdout and stderr
+            stdout = await process.stdout.read()
+            stderr = await process.stderr.read()
+
+            return CommandResult(
+                status="completed",
+                exit_code=exit_code,
+                stdout=stdout.decode("utf-8", errors="replace"),
+                stderr=stderr.decode("utf-8", errors="replace"),
+            )
+
+        except asyncssh.Error as e:
+            raise CommandError(f"Failed to execute ephemeral command: {e}") from e
+        except Exception as e:
+            raise SSHServiceError(f"Unexpected error in ephemeral command: {e}") from e
+
+    async def close_agent_connection(self, agent_id: str) -> None:
+        """Close all connections and sessions for the specified agent.
+
+        Args:
+            agent_id: Agent ID to close connections for
+        """
+        # Find and close all sessions for this agent
+        sessions_to_close = [
+            session_id
+            for session_id, session in self._sessions.items()
+            if session.agent_id == agent_id
+        ]
+
+        # Close sessions
+        for session_id in sessions_to_close:
+            try:
+                await self.end_session(session_id)
+            except Exception:
+                pass  # Continue closing other sessions
+
+        # Close connections for this agent
+        connections_to_close = [
+            conn_key
+            for conn_key, conn_info in self._connections.items()
+            if conn_info.agent_id == agent_id
+        ]
+
+        for conn_key in connections_to_close:
+            try:
+                connection_info = self._connections[conn_key]
+                if connection_info.connection:
+                    await connection_info.connection.close()
+            except Exception:
+                pass  # Continue closing other connections
+            finally:
+                self._connections.pop(conn_key, None)
+
+        # Clean up connection locks
+        self._connection_locks.pop(agent_id, None)
+
+    async def shutdown(self) -> None:
+        """Shutdown the service and clean up all resources."""
+        # Get all agent IDs
+        agent_ids = set()
+        for session in self._sessions.values():
+            agent_ids.add(session.agent_id)
+        for conn_info in self._connections.values():
+            agent_ids.add(conn_info.agent_id)
+
+        # Close all agent connections
+        for agent_id in agent_ids:
+            try:
+                await self.close_agent_connection(agent_id)
+            except Exception:
+                pass  # Continue shutting down
+
+        # Clear all remaining state
+        self._connections.clear()
+        self._sessions.clear()
+        self._connection_locks.clear()
+        self._session_locks.clear()
+
+    def _make_marker(self) -> str:
+        """Generate a unique marker for command completion detection.
+
+        Returns:
+            Unique marker string
+        """
+        # Generate unique marker using UUID
+        marker_id = str(uuid.uuid4()).replace("-", "")[:16]  # 16 char unique ID
+        return f"MARKER_{marker_id}"
+
+    async def _ensure_connection(
+        self,
+        agent_id: str,
+        host: str,
+        username: str,
+        password: Optional[str] = None,
+        private_key: Optional[str] = None,
+        port: int = 22,
+    ) -> ConnectionInfo:
+        """Ensure a connection exists for the agent/host combination.
+
+        Args:
+            agent_id: Agent identifier
+            host: SSH host
+            username: SSH username
+            password: SSH password (optional)
+            private_key: Path to private key (optional)
+            port: SSH port
+
+        Returns:
+            ConnectionInfo for the established connection
+
+        Raises:
+            ConnectionError: If connection fails
+        """
+        # Create connection key for pooling
+        auth_type = "key" if private_key else "password"
+        connection_key = f"{agent_id}:{host}:{username}:{auth_type}"
+
+        # Check if connection already exists
+        if connection_key in self._connections:
+            return self._connections[connection_key]
+
+        # Ensure per-agent connection lock exists
+        if agent_id not in self._connection_locks:
+            self._connection_locks[agent_id] = asyncio.Lock()
+
+        # Use lock to prevent concurrent connection attempts for same agent
+        async with self._connection_locks[agent_id]:
+            # Double-check after acquiring lock
+            if connection_key in self._connections:
+                return self._connections[connection_key]
+
+            try:
+                # Prepare connection arguments
+                connect_kwargs = {
+                    "host": host,
+                    "port": port,
+                    "username": username,
+                    "known_hosts": None,  # Disable host key verification for now
+                }
+
+                if private_key:
+                    connect_kwargs["client_keys"] = [private_key]
+                elif password:
+                    connect_kwargs["password"] = password
+                else:
+                    raise ConnectionError(
+                        "Either password or private_key must be provided"
+                    )
+
+                # Create SSH connection
+                connection = await asyncssh.connect(**connect_kwargs)
+
+                # Create ConnectionInfo
+                connection_info = ConnectionInfo(
+                    connection=connection,
+                    host=host,
+                    username=username,
+                    agent_id=agent_id,
+                    metadata={"port": port, "auth_type": auth_type},
+                )
+
+                # Store connection
+                self._connections[connection_key] = connection_info
+                return connection_info
+
+            except asyncssh.Error as e:
+                raise ConnectionError(
+                    f"Failed to connect to {host}:{port} as {username}: {e}"
+                ) from e
+            except Exception as e:
+                raise ConnectionError(
+                    f"Unexpected error connecting to {host}:{port}: {e}"
+                ) from e
+
+    async def _read_stream_loop(self, session_id: str) -> None:
+        """Background task to read output from session stream.
+
+        Args:
+            session_id: Session ID to read from
+        """
+        session = self._sessions.get(session_id)
+        if not session:
+            return
+
+        try:
+            while session.status == "active":
+                try:
+                    # Read data from stdout (with timeout to allow checking status)
+                    data = await asyncio.wait_for(
+                        session.process.stdout.read(8192), timeout=0.1
+                    )
+
+                    if not data:  # EOF
+                        break
+
+                    # Accumulate data in buffer
+                    async with session.condition:
+                        session.buffer += data.decode("utf-8", errors="replace")
+                        session.condition.notify_all()
+
+                except asyncio.TimeoutError:
+                    # Timeout is expected, continue checking status
+                    continue
+                except Exception as e:
+                    # Log error and mark session as broken
+                    print(f"Error reading from session {session_id}: {e}")
+                    session.status = "broken"
+                    break
+
+        except Exception as e:
+            print(f"Reader task error for session {session_id}: {e}")
+            if session:
+                session.status = "broken"
+        finally:
+            # Ensure session is marked as closed if we're exiting
+            if session and session.status == "active":
+                session.status = "closed"

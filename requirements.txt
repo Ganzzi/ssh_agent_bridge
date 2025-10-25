@@ -1,0 +1,4 @@
+# SSH Agent Bridge - Runtime Dependencies
+# Pinned versions for reproducible testing and CI/CD
+
+asyncssh==2.14.0
