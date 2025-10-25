@@ -178,36 +178,36 @@ Build a production-ready Python package that provides high-level SSH session man
 
 ### 4.1 API Documentation
 **File: `docs/API.md`**
-- [ ] Method signatures with type hints
-- [ ] Parameter descriptions
-- [ ] Return value schemas
-- [ ] Exception documentation
-- [ ] Timeout behavior & edge cases
+- [x] Method signatures with type hints
+- [x] Parameter descriptions
+- [x] Return value schemas
+- [x] Exception documentation
+- [x] Timeout behavior & edge cases
 
 ### 4.2 User Guide
 **File: `docs/GUIDE.md`**
-- [ ] Installation instructions
-- [ ] Quick start (single session, single command)
-- [ ] Multi-session patterns
-- [ ] Interactive session example (with prompts)
-- [ ] Error handling best practices
+- [x] Installation instructions
+- [x] Quick start (single session, single command)
+- [x] Multi-session patterns
+- [x] Interactive session example (with prompts)
+- [x] Error handling best practices
 
 ### 4.3 Example Scripts
 **File: `examples/`**
-- [ ] `simple_command.py` - one-off ephemeral command
-- [ ] `persistent_session.py` - create session, run multiple commands
-- [ ] `interactive_prompt.py` - handle password/yes-no prompts
-- [ ] `multi_agent_multi_session.py` - multiple agents on same VM
-- [ ] `signal_handling.py` - interrupt long-running commands
-- [ ] `error_recovery.py` - connection recovery patterns
+- [x] `simple_command.py` - one-off ephemeral command
+- [x] `persistent_session.py` - create session, run multiple commands
+- [x] `interactive_prompt.py` - handle password/yes-no prompts
+- [x] `multi_agent_multi_session.py` - multiple agents on same VM
+- [x] `signal_handling.py` - interrupt long-running commands
+- [x] `error_recovery.py` - connection recovery patterns
 
 ### 4.4 Architecture Documentation
 **File: `docs/ARCHITECTURE.md`**
-- [ ] Design decisions (PTY vs non-PTY, marker strategy)
-- [ ] Buffer & state management
-- [ ] Concurrency model (serialization per session)
-- [ ] Limitations & known issues
-- [ ] Future enhancement ideas
+- [x] Design decisions (PTY vs non-PTY, marker strategy)
+- [x] Buffer & state management
+- [x] Concurrency model (serialization per session)
+- [x] Limitations & known issues
+- [x] Future enhancement ideas
 
 ---
 
