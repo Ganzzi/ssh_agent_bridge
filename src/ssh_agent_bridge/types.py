@@ -5,7 +5,7 @@ the SSH Agent Bridge package.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 
 @dataclass
@@ -49,7 +49,7 @@ class SessionInfo:
     connection_info: ConnectionInfo
     process: Any  # asyncssh.SSHClientProcess
     buffer: str
-    markers: set[str]
+    markers: Set[str]
     reader_task: Any  # asyncio.Task
     lock: Any  # asyncio.Lock
     condition: Any  # asyncio.Condition

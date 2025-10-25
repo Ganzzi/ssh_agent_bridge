@@ -7,18 +7,13 @@ commands, interactive prompts, and signal handling.
 
 from .core import SSHService
 from .exceptions import (
-    SSHServiceError,
+    CommandError,
     ConnectionError,
     SessionError,
-    CommandError,
+    SSHServiceError,
     TimeoutError,
 )
-from .types import (
-    ConnectionInfo,
-    SessionInfo,
-    CommandResult,
-    PartialResult,
-)
+from .types import CommandResult, ConnectionInfo, PartialResult, SessionInfo
 
 __version__ = "0.1.0"
 __all__ = [

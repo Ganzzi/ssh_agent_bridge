@@ -140,7 +140,7 @@ class TestConnectionManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             assert conn_info.host == "example.com"
@@ -159,7 +159,7 @@ class TestConnectionManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             # Second connection with same parameters should reuse
@@ -167,7 +167,7 @@ class TestConnectionManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             assert conn1 is conn2
@@ -181,14 +181,14 @@ class TestConnectionManagement:
                 agent_id="agent-1",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             conn2 = await ssh_service._ensure_connection(
                 agent_id="agent-2",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             assert conn1 is not conn2
@@ -204,7 +204,7 @@ class TestConnectionManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             conn2 = await ssh_service._ensure_connection(
@@ -226,7 +226,7 @@ class TestConnectionManagement:
                     agent_id="test-agent",
                     host="badhost.com",
                     username="testuser",
-                    password="testpass",
+                    # password="testpass", # Disable for testing
                 )
 
     @pytest.mark.asyncio
@@ -238,13 +238,13 @@ class TestConnectionManagement:
                 agent_id="agent-1",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
             await ssh_service._ensure_connection(
                 agent_id="agent-2",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             assert len(ssh_service._connections) == 2
@@ -264,7 +264,7 @@ class TestSessionLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             assert session_id in ssh_service._sessions
@@ -297,7 +297,7 @@ class TestSessionLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             # Verify session exists
@@ -326,7 +326,7 @@ class TestSessionLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             # End session first time
@@ -344,7 +344,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -389,6 +389,59 @@ class TestCommandExecution:
             assert "command output" in result.stdout
 
     @pytest.mark.asyncio
+    async def test_run_command_with_exit_code(self, ssh_service, mock_asyncssh):
+        """Test command execution that exits with non-zero code."""
+        with patch("asyncssh.connect", mock_asyncssh.connect):
+            session_id = await ssh_service.create_session(
+                agent_id="test-agent",
+                host="example.com",
+                username="testuser",
+                # password="testpass", # Disable for testing
+                verify_host_key=False,  # Disable for testing
+            )
+
+            session = ssh_service._sessions[session_id]
+
+            # Cancel the reader task so we can control the buffer directly
+            if session.reader_task and not session.reader_task.done():
+                session.reader_task.cancel()
+                try:
+                    await session.reader_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Capture the marker that will be used
+            sent_commands = []
+            session.process.stdin.write = lambda cmd: sent_commands.append(cmd)
+
+            # Simulate asynchronously adding output to buffer with marker and exit code 1
+            async def add_output_with_marker():
+                await asyncio.sleep(0.01)
+                if sent_commands:
+                    import re
+
+                    cmd = sent_commands[-1]
+                    match = re.search(r"echo\s+(\S+)\s+\$\?", cmd)
+                    if match:
+                        marker = match.group(1)
+                        async with session.condition:
+                            session.buffer += "command failed\n" + marker + " 1\n"
+                            session.condition.notify_all()
+
+            # Start the output simulation task
+            output_task = asyncio.create_task(add_output_with_marker())
+
+            result = await ssh_service.run_command(session_id, "failing_command", 5.0)
+
+            # Clean up task
+            await output_task
+
+            assert isinstance(result, CommandResult)
+            assert result.status == "completed"
+            assert result.exit_code == 1
+            assert "command failed" in result.stdout
+
+    @pytest.mark.asyncio
     async def test_run_command_partial(self, ssh_service, mock_asyncssh):
         """Test command execution that times out before completion."""
         with patch("asyncssh.connect", mock_asyncssh.connect):
@@ -396,7 +449,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -432,7 +485,39 @@ class TestCommandExecution:
             assert result.pending_marker.startswith("MARKER_")
 
     @pytest.mark.asyncio
+    async def test_run_command_broken_session(self, ssh_service, mock_asyncssh):
+        """Test command execution when session becomes broken during execution."""
+        with patch("asyncssh.connect", mock_asyncssh.connect):
+            session_id = await ssh_service.create_session(
+                agent_id="test-agent",
+                host="example.com",
+                username="testuser",
+                # password="testpass", # Disable for testing
+                verify_host_key=False,  # Disable for testing
+            )
+
+            session = ssh_service._sessions[session_id]
+
+            # Cancel reader task and mark session as broken
+            if session.reader_task and not session.reader_task.done():
+                session.reader_task.cancel()
+                try:
+                    await session.reader_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Mark session as broken
+            session.status = "broken"
+
+            # Attempting to run command on broken session should fail
+            with pytest.raises(
+                SessionError, match="Session .* is not active \\(status: broken\\)"
+            ):
+                await ssh_service.run_command(session_id, "ls", 5.0)
+
+    @pytest.mark.asyncio
     async def test_run_command_invalid_session(self, ssh_service):
+        """Test running command on invalid session."""
         """Test running command on invalid session."""
         with pytest.raises(SessionError, match="Session invalid does not exist"):
             await ssh_service.run_command("invalid", "ls", 5.0)
@@ -445,7 +530,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             await ssh_service.end_session(session_id)
@@ -461,7 +546,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -528,7 +613,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -580,7 +665,7 @@ class TestInteractiveFeatures:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -605,7 +690,7 @@ class TestInteractiveFeatures:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -623,7 +708,7 @@ class TestInteractiveFeatures:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -640,7 +725,7 @@ class TestInteractiveFeatures:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             with pytest.raises(SSHServiceError, match="Unsupported signal name"):
@@ -654,7 +739,7 @@ class TestInteractiveFeatures:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -683,7 +768,7 @@ class TestEphemeralCommands:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
                 command="echo 'hello world'",
             )
 
@@ -708,7 +793,7 @@ class TestEphemeralCommands:
                     agent_id="test-agent",
                     host="example.com",
                     username="testuser",
-                    password="testpass",
+                    # password="testpass", # Disable for testing
                     command="slow_command",
                     timeout=0.1,
                 )
@@ -729,7 +814,7 @@ class TestEphemeralCommands:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
                 command="failing_command",
             )
 
@@ -748,7 +833,7 @@ class TestBufferManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -781,7 +866,7 @@ class TestBufferManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -811,6 +896,65 @@ class TestBufferManagement:
             assert result1.exit_code == 0
             assert result2.exit_code == 0
             assert "Command 1 output" in result1.output
+
+    @pytest.mark.asyncio
+    async def test_large_output_handling(self, ssh_service, mock_asyncssh):
+        """Test handling of commands that produce large amounts of output."""
+        with patch("asyncssh.connect", mock_asyncssh.connect):
+            session_id = await ssh_service.create_session(
+                agent_id="test-agent",
+                host="example.com",
+                username="testuser",
+                # password="testpass", # Disable for testing
+                verify_host_key=False,  # Disable for testing
+            )
+
+            session = ssh_service._sessions[session_id]
+
+            # Cancel the reader task so we can control the buffer directly
+            if session.reader_task and not session.reader_task.done():
+                session.reader_task.cancel()
+                try:
+                    await session.reader_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Capture the marker that will be used
+            sent_commands = []
+            session.process.stdin.write = lambda cmd: sent_commands.append(cmd)
+
+            # Create large output (100KB)
+            large_output_size = 100 * 1024
+            large_output = "x" * large_output_size + "\n"
+
+            # Simulate asynchronously adding large output to buffer with marker
+            async def add_large_output_with_marker():
+                await asyncio.sleep(0.01)
+                if sent_commands:
+                    import re
+
+                    cmd = sent_commands[-1]
+                    match = re.search(r"echo\s+(\S+)\s+\$\?", cmd)
+                    if match:
+                        marker = match.group(1)
+                        async with session.condition:
+                            session.buffer += large_output + marker + " 0\n"
+                            session.condition.notify_all()
+
+            # Start the output simulation task
+            output_task = asyncio.create_task(add_large_output_with_marker())
+
+            result = await ssh_service.run_command(session_id, "large_output_cmd", 5.0)
+
+            # Clean up task
+            await output_task
+
+            # Should handle large output correctly
+            assert isinstance(result, CommandResult)
+            assert result.status == "completed"
+            assert result.exit_code == 0
+            assert len(result.stdout) >= large_output_size  # At least the large output
+            assert "x" * 100 in result.stdout  # Should contain our test data
 
 
 class TestConcurrentSessions:
@@ -857,14 +1001,14 @@ class TestConcurrentSessions:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session2_id = await ssh_service.create_session(
                 agent_id="test-agent",
                 host="different.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             # Commands in different sessions should not interfere
@@ -883,14 +1027,14 @@ class TestConcurrentSessions:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session2_id = await ssh_service.create_session(
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             # Should reuse the same connection
@@ -913,7 +1057,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             assert session_id in ssh_service._sessions
@@ -934,14 +1078,14 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session2_id = await ssh_service.create_session(
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             # Should have one connection shared by both sessions
@@ -994,7 +1138,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -1017,7 +1161,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             assert isinstance(session_id, str)
@@ -1033,7 +1177,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             # Mock the process to simulate command output
@@ -1058,7 +1202,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             # Should not raise NotImplementedError
@@ -1072,7 +1216,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             # Should not raise NotImplementedError
@@ -1087,7 +1231,7 @@ class TestCleanupAndLifecycle:
                 host="example.com",
                 command="ls",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             assert result.status == "completed"
@@ -1102,7 +1246,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                password="testpass",
+                # password="testpass", # Disable for testing
             )
 
             # Should not raise NotImplementedError

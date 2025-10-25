@@ -102,6 +102,26 @@ line_length = 88
 known_first_party = ["ssh_agent_bridge"]
 known_third_party = ["asyncssh"]
 
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503"]
+exclude = [".git", "__pycache__", "build", "dist", "*.egg-info"]
+
+[tool.pylint.main]
+disable = [
+    "C0114", # missing-module-docstring (we have them)
+    "C0115", # missing-class-docstring (we have them)
+    "C0116", # missing-function-docstring (we have them)
+    "R0903", # too-few-public-methods (SSHService has many)
+    "R0913", # too-many-arguments (some methods need many params)
+    "R0917", # too-many-positional-arguments (same)
+    "W0613", # unused-argument (some params needed for API)
+    "W0622", # redefined-builtin (id, etc.)
+]
+
+[tool.pylint.format]
+max-line-length = 88
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-ra -q --strict-markers --strict-config"
@@ -127,4 +147,11 @@ exclude_lines = [
     "def __repr__",
     "raise AssertionError",
     "raise NotImplementedError",
+]
+
+[dependency-groups]
+dev = [
+    "pydocstyle>=6.3.0",
+    "pylint>=3.2.7",
+    "pytest-cov>=5.0.0",
 ]

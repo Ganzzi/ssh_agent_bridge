@@ -7,15 +7,17 @@ session management for AI agents.
 import asyncio
 import uuid
 from typing import Dict, Optional, Union
+
 import asyncssh
-from .types import ConnectionInfo, SessionInfo, CommandResult, PartialResult
+
 from .exceptions import (
-    SSHServiceError,
+    CommandError,
     ConnectionError,
     SessionError,
-    CommandError,
+    SSHServiceError,
     TimeoutError,
 )
+from .types import CommandResult, ConnectionInfo, PartialResult, SessionInfo
 
 
 class SSHService:
@@ -25,7 +27,7 @@ class SSHService:
     with marker-based completion detection for AI agent use cases.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the SSH service."""
         self._connections: Dict[str, ConnectionInfo] = {}
         self._sessions: Dict[str, SessionInfo] = {}
@@ -41,6 +43,7 @@ class SSHService:
         private_key: Optional[str] = None,
         port: int = 22,
         term_type: str = "xterm",
+        verify_host_key: bool = True,
     ) -> str:
         """Create a new SSH session for the specified agent and host.
 
@@ -52,6 +55,7 @@ class SSHService:
             private_key: Path to private key file (optional if using password auth)
             port: SSH port (default: 22)
             term_type: Terminal type for PTY (default: xterm)
+            verify_host_key: Whether to verify SSH host keys (default: True)
 
         Returns:
             Session ID for subsequent operations
@@ -62,7 +66,7 @@ class SSHService:
         """
         # Ensure connection exists
         connection_info = await self._ensure_connection(
-            agent_id, host, username, password, private_key, port
+            agent_id, host, username, password, private_key, port, verify_host_key
         )
 
         # Generate unique session ID
@@ -179,8 +183,8 @@ class SSHService:
             # Generate unique marker
             marker = self._make_marker()
 
-            # Create command with marker
-            marked_command = f"{command} && echo {marker} $?\n"
+            # Create command with marker (use ; to ensure marker is always printed)
+            marked_command = f"{command}; echo {marker} $?\n"
 
             # Track marker for this session
             session.markers.add(marker)
@@ -221,6 +225,14 @@ class SSHService:
 
         while True:
             async with session.condition:
+                # Check if session is still active
+                if session.status != "active":
+                    # Session is broken or closed - cannot complete command
+                    session.markers.discard(marker)
+                    raise CommandError(
+                        f"Session {session.session_id} became {session.status} during command execution"
+                    )
+
                 # Check if marker is in buffer
                 buffer_slice = session.buffer[start_index:]
                 marker_index = buffer_slice.find(marker)
@@ -299,7 +311,7 @@ class SSHService:
 
         # Use session lock to serialize operations
         async with self._session_locks[session_id]:
-            # Wait for marker from beginning of buffer (since we don't know where partial result left off)
+            # Wait for marker from buffer start (partial result position unknown)
             result = await self._wait_for_marker(session, pending_marker, 0, timeout)
 
             if isinstance(result, PartialResult):
@@ -393,6 +405,7 @@ class SSHService:
         private_key: Optional[str] = None,
         port: int = 22,
         timeout: float = 10.0,
+        verify_host_key: bool = True,
     ) -> CommandResult:
         """Run a single command without creating a persistent session.
 
@@ -405,6 +418,7 @@ class SSHService:
             private_key: Path to private key file (optional)
             port: SSH port (default: 22)
             timeout: Timeout in seconds
+            verify_host_key: Whether to verify SSH host keys (default: True)
 
         Returns:
             CommandResult with exit code, stdout, and stderr
@@ -416,7 +430,7 @@ class SSHService:
         """
         # Ensure connection exists
         connection_info = await self._ensure_connection(
-            agent_id, host, username, password, private_key, port
+            agent_id, host, username, password, private_key, port, verify_host_key
         )
 
         try:
@@ -430,7 +444,7 @@ class SSHService:
                 # Kill process on timeout
                 try:
                     process.kill()
-                except:
+                except Exception:
                     pass
                 raise TimeoutError(f"Command timed out after {timeout} seconds")
 
@@ -533,6 +547,7 @@ class SSHService:
         password: Optional[str] = None,
         private_key: Optional[str] = None,
         port: int = 22,
+        verify_host_key: bool = True,
     ) -> ConnectionInfo:
         """Ensure a connection exists for the agent/host combination.
 
@@ -543,6 +558,7 @@ class SSHService:
             password: SSH password (optional)
             private_key: Path to private key (optional)
             port: SSH port
+            verify_host_key: Whether to verify SSH host keys
 
         Returns:
             ConnectionInfo for the established connection
@@ -568,14 +584,41 @@ class SSHService:
             if connection_key in self._connections:
                 return self._connections[connection_key]
 
+            # Validate private key file if provided
+            if private_key:
+                import os
+                import stat
+
+                if not os.path.isfile(private_key):
+                    raise ConnectionError(
+                        f"Private key file does not exist: {private_key}"
+                    )
+                # Check file permissions (should not be world-readable)
+                file_stat = os.stat(private_key)
+                if file_stat.st_mode & stat.S_IROTH:
+                    raise ConnectionError(
+                        f"Private key file is world-readable: {private_key}"
+                    )
+
             try:
                 # Prepare connection arguments
-                connect_kwargs = {
-                    "host": host,
-                    "port": port,
-                    "username": username,
-                    "known_hosts": None,  # Disable host key verification for now
-                }
+                if verify_host_key:
+                    import pathlib
+
+                    known_hosts_path = pathlib.Path("~/.ssh/known_hosts").expanduser()
+                    connect_kwargs = {
+                        "host": host,
+                        "port": port,
+                        "username": username,
+                        "known_hosts": asyncssh.read_known_hosts(str(known_hosts_path)),
+                    }
+                else:
+                    connect_kwargs = {
+                        "host": host,
+                        "port": port,
+                        "username": username,
+                        "known_hosts": None,
+                    }
 
                 if private_key:
                     connect_kwargs["client_keys"] = [private_key]

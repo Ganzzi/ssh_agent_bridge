@@ -1,6 +1,7 @@
 """Custom exceptions for SSH Agent Bridge.
 
-This module defines the exception hierarchy used throughout the SSH Agent Bridge package.
+This module defines the exception hierarchy used throughout
+the SSH Agent Bridge package.
 """
 
 

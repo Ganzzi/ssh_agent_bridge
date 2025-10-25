@@ -11,6 +11,7 @@ This guide provides comprehensive instructions for using the SSH Agent Bridge pa
 - [Command Execution](#command-execution)
 - [Interactive Operations](#interactive-operations)
 - [Error Handling](#error-handling)
+- [Security Considerations](#security-considerations)
 - [Best Practices](#best-practices)
 - [Advanced Patterns](#advanced-patterns)
 
@@ -361,6 +362,91 @@ async def with_session(service, agent_id, host, username, password):
         if session_id:
             await service.end_session(session_id)
 ```
+
+## Security Considerations
+
+### Host Key Verification
+
+SSH Agent Bridge enables host key verification by default for security. This prevents man-in-the-middle attacks by ensuring you're connecting to the expected host.
+
+```python
+# Secure (default): Verify host keys
+session_id = await service.create_session(
+    agent_id="agent1",
+    host="example.com",
+    username="user",
+    password="secret",
+    verify_host_key=True  # Default: True
+)
+
+# Less secure (not recommended): Skip verification
+session_id = await service.create_session(
+    agent_id="agent1",
+    host="example.com",
+    username="user",
+    password="secret",
+    verify_host_key=False  # Only for testing/trusted networks
+)
+```
+
+**Security Warning**: Only disable host key verification in trusted environments or for testing. In production, always verify host keys.
+
+### Private Key Security
+
+When using SSH key authentication:
+
+1. **File Permissions**: Private key files should not be world-readable
+2. **Secure Storage**: Store keys securely and rotate regularly
+3. **Key Validation**: The library validates key file existence and permissions
+
+```python
+# The library automatically validates private key security
+session_id = await service.create_session(
+    agent_id="agent1",
+    host="example.com",
+    username="user",
+    private_key="/path/to/private/key"  # Must not be world-readable
+)
+```
+
+### Credential Handling
+
+- **No Logging**: Passwords and key paths are never logged in error messages
+- **Memory Management**: Credentials are passed directly to SSH library
+- **No Persistence**: Credentials are not stored beyond connection establishment
+
+### Buffer Security
+
+Session buffers accumulate all command output in memory. For sessions that handle sensitive data:
+
+- **Session Scope**: Use focused sessions for sensitive operations
+- **Cleanup**: End sessions promptly after sensitive operations
+- **Memory Awareness**: Be aware that output remains in memory until session ends
+
+```python
+# For sensitive operations, use dedicated sessions
+async def run_sensitive_command(service, host, username, password):
+    session_id = await service.create_session(
+        agent_id="sensitive-agent",
+        host=host,
+        username=username,
+        password=password
+    )
+
+    try:
+        result = await service.run_command(session_id, "cat /etc/shadow")
+        # Process sensitive result
+        return result
+    finally:
+        # Immediately clean up to clear buffer from memory
+        await service.end_session(session_id)
+```
+
+### Network Security
+
+- **SSH Protocol**: Uses secure SSH protocol with encryption
+- **Connection Pooling**: Reuses authenticated connections securely
+- **Session Isolation**: Commands from different agents are isolated
 
 ## Best Practices
 
