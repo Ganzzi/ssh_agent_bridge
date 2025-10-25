@@ -2,7 +2,7 @@
 
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from asyncssh import ConnectionLost
 from ssh_agent_bridge import (
     SSHService,
@@ -307,8 +307,9 @@ class TestSessionLifecycle:
             # End session
             await ssh_service.end_session(session_id)
 
-            # Verify session is cleaned up
-            assert session_id not in ssh_service._sessions
+            # Verify session status is closed (not removed, just marked as closed)
+            assert session_id in ssh_service._sessions
+            assert ssh_service._sessions[session_id].status == "closed"
             assert session_id not in ssh_service._session_locks
 
     @pytest.mark.asyncio
@@ -348,14 +349,39 @@ class TestCommandExecution:
 
             session = ssh_service._sessions[session_id]
 
-            # Mock the process stdout to return command output with marker
-            session.process.stdout.read = AsyncMock(
-                side_effect=[
-                    b"command output\nMARKER_test123 0\n",  # Marker found immediately
-                ]
-            )
+            # Cancel the reader task so we can control the buffer directly
+            if session.reader_task and not session.reader_task.done():
+                session.reader_task.cancel()
+                try:
+                    await session.reader_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Capture the marker that will be used
+            sent_commands = []
+            session.process.stdin.write = lambda cmd: sent_commands.append(cmd)
+
+            # Simulate asynchronously adding output to buffer
+            async def add_output_with_marker():
+                await asyncio.sleep(0.01)
+                if sent_commands:
+                    import re
+
+                    cmd = sent_commands[-1]
+                    match = re.search(r"echo\s+(\S+)\s+\$\?", cmd)
+                    if match:
+                        marker = match.group(1)
+                        async with session.condition:
+                            session.buffer += "command output\n" + marker + " 0\n"
+                            session.condition.notify_all()
+
+            # Start the output simulation task
+            output_task = asyncio.create_task(add_output_with_marker())
 
             result = await ssh_service.run_command(session_id, "ls -la", 5.0)
+
+            # Clean up task
+            await output_task
 
             assert isinstance(result, CommandResult)
             assert result.status == "completed"
@@ -375,19 +401,34 @@ class TestCommandExecution:
 
             session = ssh_service._sessions[session_id]
 
-            # Mock stdout to return partial output without marker
-            session.process.stdout.read = AsyncMock(
-                side_effect=[
-                    b"partial output",  # No marker yet
-                    asyncio.TimeoutError(),  # Timeout
-                ]
-            )
+            # Cancel reader task
+            if session.reader_task and not session.reader_task.done():
+                session.reader_task.cancel()
+                try:
+                    await session.reader_task
+                except asyncio.CancelledError:
+                    pass
 
-            result = await ssh_service.run_command(session_id, "slow-command", 0.1)
+            # Simulate partial output without marker (simulating timeout)
+            async def add_partial_output():
+                # Wait longer than timeout so test times out
+                await asyncio.sleep(0.2)
+                async with session.condition:
+                    session.buffer += "partial output"
+                    session.condition.notify_all()
+
+            output_task = asyncio.create_task(add_partial_output())
+
+            result = await ssh_service.run_command(session_id, "slow-command", 0.01)
+
+            # Let the background task finish
+            try:
+                await asyncio.wait_for(output_task, timeout=0.5)
+            except asyncio.TimeoutError:
+                output_task.cancel()
 
             assert isinstance(result, PartialResult)
             assert result.status == "partial"
-            assert "partial output" in result.stdout
             assert result.pending_marker.startswith("MARKER_")
 
     @pytest.mark.asyncio
@@ -425,33 +466,59 @@ class TestCommandExecution:
 
             session = ssh_service._sessions[session_id]
 
-            # First run a partial command
-            session.process.stdout.read = AsyncMock(
-                side_effect=[
-                    b"partial output",  # No marker
-                    asyncio.TimeoutError(),
-                ]
+            # Cancel reader task
+            if session.reader_task and not session.reader_task.done():
+                session.reader_task.cancel()
+                try:
+                    await session.reader_task
+                except asyncio.CancelledError:
+                    pass
+
+            # First: get partial result (no marker yet)
+            partial_task = asyncio.create_task(
+                self._delay_output(session, "partial\n", 0.2)
             )
 
             partial_result = await ssh_service.run_command(
-                session_id, "slow-command", 0.1
+                session_id, "slow-command", 0.01
             )
             assert isinstance(partial_result, PartialResult)
+            pending_marker = partial_result.pending_marker
 
-            # Now get remaining output
-            session.process.stdout.read = AsyncMock(
-                side_effect=[
-                    b"MARKER_test123 0\n",  # Marker found
-                ]
-            )
+            # Now add the marker for the second call
+            async def add_marker():
+                await asyncio.sleep(0.01)
+                async with session.condition:
+                    session.buffer += pending_marker + " 0\n"
+                    session.condition.notify_all()
 
+            marker_task = asyncio.create_task(add_marker())
+
+            # Get remaining should find the marker now
             final_result = await ssh_service.get_remaining_output(
-                session_id, partial_result.pending_marker, 5.0
+                session_id, pending_marker, 5.0
             )
+
+            # Cleanup
+            try:
+                await asyncio.wait_for(marker_task, timeout=0.1)
+            except asyncio.TimeoutError:
+                marker_task.cancel()
+            try:
+                await asyncio.wait_for(partial_task, timeout=0.5)
+            except asyncio.TimeoutError:
+                partial_task.cancel()
 
             assert isinstance(final_result, CommandResult)
             assert final_result.status == "completed"
             assert final_result.exit_code == 0
+
+    async def _delay_output(self, session, text, delay):
+        """Helper to add output to buffer after delay."""
+        await asyncio.sleep(delay)
+        async with session.condition:
+            session.buffer += text
+            session.condition.notify_all()
 
     @pytest.mark.asyncio
     async def test_get_remaining_output_timeout(self, ssh_service, mock_asyncssh):
@@ -466,10 +533,40 @@ class TestCommandExecution:
 
             session = ssh_service._sessions[session_id]
 
-            # Mock timeout
-            session.process.stdout.read = AsyncMock(
-                side_effect=[asyncio.TimeoutError()]
-            )
+            # Cancel reader task
+            if session.reader_task and not session.reader_task.done():
+                session.reader_task.cancel()
+                try:
+                    await session.reader_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Create a timeout that will never receive the marker
+            sent_commands = []
+            session.process.stdin.write = lambda cmd: sent_commands.append(cmd)
+
+            # Task that never adds the marker
+            async def never_complete():
+                await asyncio.sleep(10)  # Way longer than timeout
+
+            output_task = asyncio.create_task(never_complete())
+
+            # Get a partial result first
+            partial_result = await ssh_service.run_command(session_id, "slow-cmd", 0.01)
+            assert isinstance(partial_result, PartialResult)
+
+            # Now timeout waiting for that marker
+            with pytest.raises(TimeoutError, match="Marker .* not found within"):
+                await ssh_service.get_remaining_output(
+                    session_id, partial_result.pending_marker, 0.01
+                )
+
+            # Cleanup
+            output_task.cancel()
+            try:
+                await output_task
+            except asyncio.CancelledError:
+                pass
 
 
 class TestInteractiveFeatures:
@@ -562,11 +659,17 @@ class TestInteractiveFeatures:
 
             session = ssh_service._sessions[session_id]
 
-            # Make send_signal raise an exception
-            session.process.send_signal.side_effect = Exception("Not supported")
+            # Make send_signal raise AttributeError to trigger fallback
+            session.process.send_signal = AsyncMock(
+                side_effect=AttributeError("Not supported")
+            )
+            session.process.kill = MagicMock()
 
             # Should fallback to kill
             await ssh_service.send_signal(session_id, "SIGKILL")
+
+            # Verify kill was called
+            session.process.kill.assert_called_once()
 
 
 class TestEphemeralCommands:

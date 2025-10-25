@@ -56,8 +56,10 @@ def mock_asyncssh():
     mock_stderr.read = AsyncMock(return_value=b"")
     mock_process.stderr = mock_stderr
 
-    # Setup stdin
-    mock_stdin = AsyncMock()
+    # Setup stdin - write() is NOT async, but drain() is
+    mock_stdin = MagicMock()
+    mock_stdin.write = MagicMock()  # Non-async write
+    mock_stdin.drain = AsyncMock()  # Async drain
     mock_process.stdin = mock_stdin
 
     # Other process methods

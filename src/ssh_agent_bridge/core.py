@@ -143,9 +143,9 @@ class SSHService:
                     pass  # Process may already be closed
 
         finally:
-            # Clean up session data
-            self._sessions.pop(session_id, None)
-            self._session_locks.pop(session_id, None)
+            # Clean up session data (keep in dict but marked as closed)
+            if session_id in self._session_locks:
+                self._session_locks.pop(session_id, None)
 
     async def run_command(
         self, session_id: str, command: str, short_timeout: float = 10.0
@@ -232,9 +232,10 @@ class SSHService:
 
                     # Extract exit code from marker line
                     marker_line_start = session.buffer.rfind("\n", 0, marker_pos) + 1
-                    marker_line = session.buffer[
-                        marker_line_start : marker_pos + len(marker)
-                    ]
+                    marker_line_end = session.buffer.find("\n", marker_pos)
+                    if marker_line_end == -1:
+                        marker_line_end = len(session.buffer)
+                    marker_line = session.buffer[marker_line_start:marker_line_end]
                     parts = marker_line.strip().split()
                     exit_code = int(parts[-1]) if len(parts) >= 2 else 1
 
