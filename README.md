@@ -163,7 +163,7 @@ For detailed testing information, see:
 #### Phase 6 Completion
 - ✅ **Build System:** PEP 517 build configured, wheel & sdist generation tested
 - ✅ **PyPI Preparation:** Package metadata, classifiers, and documentation uploaded
-- ✅ **Release Process:** Version 0.1.0 tagged and released to PyPI
+- ✅ **Release Process:** Version 0.1.1 tagged and released to PyPI
 - ✅ **Package Available:** https://pypi.org/project/ssh-agent-bridge/
 
 #### Final Test Status
