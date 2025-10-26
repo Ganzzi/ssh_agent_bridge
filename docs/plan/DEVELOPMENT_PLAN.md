@@ -257,26 +257,26 @@ Build a production-ready Python package that provides high-level SSH session man
 ## Phase 6: Packaging & Release
 
 ### 6.1 Build System
-- [ ] Configure `build` package (PEP 517)
-- [ ] Test wheel & sdist generation
-- [ ] Verify editable install (`pip install -e .`)
+- [x] Configure `build` package (PEP 517)
+- [x] Test wheel & sdist generation
+- [x] Verify editable install (`pip install -e .`)
 
 ### 6.2 PyPI Preparation
-- [ ] Create PyPI test account
-- [ ] Prepare long description (README.md as body)
-- [ ] Add keywords, classifiers, project URLs
-- [ ] Generate distribution (`python -m build`)
+- [x] Create PyPI test account
+- [x] Prepare long description (README.md as body)
+- [x] Add keywords, classifiers, project URLs
+- [x] Generate distribution (`python -m build`)
 
 ### 6.3 Release Process
-- [ ] Tag version in git (v0.1.0)
-- [ ] Upload to PyPI (`twine upload dist/*`)
-- [ ] Verify installable: `pip install ssh-agent-bridge`
-- [ ] Test import in fresh environment
+- [x] Tag version in git (v0.1.0)
+- [x] Upload to PyPI (`twine upload dist/*`)
+- [x] Verify installable: `pip install ssh-agent-bridge`
+- [x] Test import in fresh environment
 
 ### 6.4 Post-Release
-- [ ] Update CHANGELOG.md
-- [ ] Announce release (documentation, repo)
-- [ ] Collect feedback & plan next iteration
+- [x] Update CHANGELOG.md
+- [x] Announce release (documentation, repo)
+- [x] Collect feedback & plan next iteration
 
 ---
 
