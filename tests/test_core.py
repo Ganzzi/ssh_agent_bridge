@@ -764,38 +764,34 @@ class TestEphemeralCommands:
     async def test_run_ephemeral_command_success(self, ssh_service, mock_asyncssh):
         """Test successful ephemeral command execution."""
         with patch("asyncssh.connect", mock_asyncssh.connect):
-            result = await ssh_service.run_ephemeral_command(
+            result = await ssh_service.run_ephemeral(
                 agent_id="test-agent",
                 host="example.com",
-                username="testuser",
-                # password="testpass", # Disable for testing
                 command="echo 'hello world'",
+                username="testuser",
+                password="testpass",  # Add password for testing
+                verify_host_key=False,  # Disable for testing
             )
 
             assert result.exit_code == 0
-            assert "hello world" in result.output
-            assert result.command == "echo 'hello world'"
+            assert "hello world" in result.stdout
 
     @pytest.mark.asyncio
     async def test_run_ephemeral_command_with_timeout(self, ssh_service, mock_asyncssh):
         """Test ephemeral command with timeout."""
-        with patch("asyncssh.connect", mock_asyncssh.connect):
-            # Mock a slow command that times out
-            mock_asyncssh.connect.return_value.run.return_value = AsyncMock()
-            mock_asyncssh.connect.return_value.run.return_value.stdout = (
-                "partial output"
-            )
-            mock_asyncssh.connect.return_value.run.return_value.stderr = ""
-            mock_asyncssh.connect.return_value.run.return_value.returncode = None
+        with patch("asyncssh.connect", mock_asyncssh.connect), patch(
+            "asyncio.wait_for", side_effect=asyncio.TimeoutError
+        ):
 
             with pytest.raises(TimeoutError):
-                await ssh_service.run_ephemeral_command(
+                await ssh_service.run_ephemeral(
                     agent_id="test-agent",
                     host="example.com",
                     username="testuser",
-                    # password="testpass", # Disable for testing
+                    password="testpass",  # Add password for testing
                     command="slow_command",
                     timeout=0.1,
+                    verify_host_key=False,  # Disable for testing
                 )
 
     @pytest.mark.asyncio
@@ -810,16 +806,17 @@ class TestEphemeralCommands:
             )
             mock_asyncssh.connect.return_value.run.return_value.returncode = 1
 
-            result = await ssh_service.run_ephemeral_command(
+            result = await ssh_service.run_ephemeral(
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",  # Add password for testing
                 command="failing_command",
+                verify_host_key=False,  # Disable for testing
             )
 
             assert result.exit_code == 1
-            assert "command failed" in result.output
+            assert "command failed" in result.stderr
 
 
 class TestBufferManagement:
@@ -1231,7 +1228,8 @@ class TestCleanupAndLifecycle:
                 host="example.com",
                 command="ls",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",  # Add password for testing
+                verify_host_key=False,  # Disable for testing
             )
 
             assert result.status == "completed"

@@ -72,6 +72,13 @@ def mock_asyncssh():
     # Setup create_process to return the mock process
     mock_conn.create_process.return_value = mock_process
 
+    # Mock result for run() method
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "hello world"
+    mock_result.stderr = ""
+    mock_conn.run = AsyncMock(return_value=mock_result)
+
     # Mock connect function
     mock_asyncssh.connect = AsyncMock(return_value=mock_conn)
     mock_asyncssh.Error = Exception

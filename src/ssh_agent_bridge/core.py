@@ -434,34 +434,33 @@ class SSHService:
         )
 
         try:
-            # Create non-PTY process for single command
-            process = await connection_info.connection.create_process(command)
-
-            # Wait for completion with timeout
-            try:
-                await asyncio.wait_for(process.wait(), timeout=timeout)
-            except asyncio.TimeoutError:
-                # Kill process on timeout
-                try:
-                    process.kill()
-                except Exception:
-                    pass
-                raise TimeoutError(f"Command timed out after {timeout} seconds")
+            # Run command using asyncssh.run for simple command execution
+            result = await asyncio.wait_for(
+                connection_info.connection.run(command), timeout=timeout
+            )
 
             # Get exit code
-            exit_code = process.returncode or 0
+            exit_code = result.returncode or 0
 
-            # Read stdout and stderr
-            stdout = await process.stdout.read()
-            stderr = await process.stderr.read()
+            # Get stdout and stderr
+            stdout = result.stdout
+            stderr = result.stderr
+
+            # Handle both bytes and string returns from asyncssh
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", errors="replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
 
             return CommandResult(
                 status="completed",
                 exit_code=exit_code,
-                stdout=stdout.decode("utf-8", errors="replace"),
-                stderr=stderr.decode("utf-8", errors="replace"),
+                stdout=stdout,
+                stderr=stderr,
             )
 
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Command timed out after {timeout} seconds")
         except asyncssh.Error as e:
             raise CommandError(f"Failed to execute ephemeral command: {e}") from e
         except Exception as e:
@@ -606,11 +605,16 @@ class SSHService:
                     import pathlib
 
                     known_hosts_path = pathlib.Path("~/.ssh/known_hosts").expanduser()
+                    try:
+                        known_hosts = asyncssh.read_known_hosts(str(known_hosts_path))
+                    except FileNotFoundError:
+                        # If known_hosts file doesn't exist, create an empty one
+                        known_hosts = asyncssh.KnownHosts()
                     connect_kwargs = {
                         "host": host,
                         "port": port,
                         "username": username,
-                        "known_hosts": asyncssh.read_known_hosts(str(known_hosts_path)),
+                        "known_hosts": known_hosts,
                     }
                 else:
                     connect_kwargs = {

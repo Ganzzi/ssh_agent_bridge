@@ -6,6 +6,7 @@ the SSH Agent Bridge package.
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Set
+from asyncssh import SSHClientConnection, SSHClientProcess
 
 
 @dataclass

@@ -28,6 +28,7 @@ async def main():
             command=command,
             username=username,
             password=password,
+            verify_host_key=False,  # Disable for testing - creates ~/.ssh/known_hosts if needed
         )
 
         print(f"Exit code: {result.exit_code}")
