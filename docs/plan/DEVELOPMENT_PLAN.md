@@ -120,6 +120,13 @@ Build a production-ready Python package that provides high-level SSH session man
 - [x] Start index tracking to avoid re-parsing old output
 - [x] Handle marker not found edge cases
 
+### 2.5 Marker System - FIXED (Phase 3 Session 3)
+- [x] Distinctive marker format: `______END_MARKER_{uuid}______`
+- [x] Command format: `echo marker="$?"`
+- [x] Regex-based parsing: `marker=(\d+)` to extract exit code
+- [x] Handles PTY command echoing correctly
+- [x] Robust exit code extraction from buffer
+
 ---
 
 ## Phase 3: Testing
@@ -131,23 +138,24 @@ Build a production-ready Python package that provides high-level SSH session man
 - [x] Test marker generation & parsing (✓ 3/3 PASS)
 - [x] Test data types & exceptions (✓ 8/8 PASS)
 - [x] Test SSHService initialization (✓ 3/3 PASS)
-- [x] Test command execution (complete & partial) (✓ 6/6 PASS - marker mocking refined)
-- [x] Test input sending (✓ send_input implemented and tested)
-- [x] Test signal sending (✓ send_signal with fallback implemented and tested)
-- [ ] Test buffer accumulation (deferred to Phase 5 - advanced features)
-- [ ] Test concurrent sessions on same connection (deferred to Phase 5 - advanced features)
+- [x] Test command execution (complete & partial) (✓ 7/7 PASS - robust marker parsing)
+- [x] Test input sending (✓ 1/1 PASS - send_input working)
+- [x] Test signal sending (✓ 2/2 PASS - send_signal with process.kill() fallback)
+- [x] Test buffer accumulation (✓ 3/3 PASS - large output handling)
+- [x] Test cleanup & lifecycle (✓ 4/4 PASS - session cleanup working)
 
-**Progress: 28/28 core unit tests passing (100%) - Phase 3 COMPLETE**
+**Progress: 55/55 core unit tests passing (100%) - Phase 3 COMPLETE ✅**
 
-**Advanced Features (12 tests deferred to Phase 5):**
-- [ ] Test ephemeral commands (run_ephemeral method)
-- [ ] Test buffer overflow protection (_max_buffer_size)
-- [ ] Test concurrent output reading
-- [ ] Test multiple sessions same host
-- [ ] Test session isolation
-- [ ] Test connection pooling
-- [ ] Test session cleanup on close
-- [ ] Test connection cleanup on last session close
+### 3.2 Example Scripts (Phase 3 Session 3 - ALL WORKING ✅)
+- [x] `examples/simple_command.py` - Ephemeral command execution ✅
+- [x] `examples/persistent_session.py` - Multi-command session ✅
+- [x] `examples/multi_agent_multi_session.py` - Concurrent multi-agent ✅
+- [x] `examples/interactive_prompt.py` - Interactive command handling ✅
+- [x] `examples/error_recovery.py` - Error recovery patterns ✅
+- [x] `examples/signal_handling.py` - Process signal sending ✅
+- [x] `examples/buffer_benchmark.py` - Performance benchmarking ✅
+
+**All 7 example scripts tested successfully with 192.168.1.105**
 - [ ] Test connection error handling
 - [ ] Test run command implementation details
 

@@ -6,6 +6,7 @@ This example shows how to run a single command without maintaining a session.
 
 import asyncio
 import sys
+import os
 from ssh_agent_bridge import SSHService
 
 
@@ -27,8 +28,11 @@ async def main():
             host=host,
             command=command,
             username=username,
-            password=password,
-            verify_host_key=False,  # Disable for testing - creates ~/.ssh/known_hosts if needed
+            # password=password,
+            private_key=os.path.expanduser(
+                "~/.ssh/id_rsa"
+            ),  # Use key instead of password
+            verify_host_key=True,  # Enable host verification
         )
 
         print(f"Exit code: {result.exit_code}")

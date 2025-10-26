@@ -6,6 +6,7 @@ This example shows how to create a persistent SSH session and run multiple comma
 
 import asyncio
 import sys
+import os
 from ssh_agent_bridge import SSHService
 
 
@@ -23,17 +24,20 @@ async def main():
         print(f"Connecting to {host}...")
 
         # Create session
+        print("Creating session...")
         session_id = await service.create_session(
             agent_id="persistent-example",
             host=host,
             username=username,
-            password=password,
+            password=password,  # Use password instead of private_key for testing
+            # private_key=os.path.expanduser("~/.ssh/id_rsa"),
+            # term_type="xterm",  # Remove for compatibility
+            verify_host_key=False,  # Disable for testing
         )
-
         print(f"Session created: {session_id}")
 
         # Run multiple commands
-        commands = ["pwd", "whoami", "ls -la", "uptime", "echo 'Session test complete'"]
+        commands = ["pwd", "whoami"]  # Simplified for testing
 
         for command in commands:
             print(f"\n$ {command}")

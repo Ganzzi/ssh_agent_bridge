@@ -75,7 +75,9 @@ class SSHService:
         try:
             # Create PTY shell session
             process = await connection_info.connection.create_process(
-                term_type=term_type, pty_requested=True
+                command="/bin/bash",  # Explicitly start bash
+                term_type=term_type,
+                request_pty=True,
             )
 
             # Create session info with synchronization primitives
@@ -184,7 +186,7 @@ class SSHService:
             marker = self._make_marker()
 
             # Create command with marker (use ; to ensure marker is always printed)
-            marked_command = f"{command}; echo {marker} $?\n"
+            marked_command = f'{command}; echo {marker}="$?"\n'
 
             # Track marker for this session
             session.markers.add(marker)
@@ -194,6 +196,9 @@ class SSHService:
 
             try:
                 # Send command to session
+                print(
+                    f"DEBUG: Sending command: {marked_command.strip()}"
+                )  # Debug output
                 session.process.stdin.write(marked_command)
                 await session.process.stdin.drain()
 
@@ -233,23 +238,22 @@ class SSHService:
                         f"Session {session.session_id} became {session.status} during command execution"
                     )
 
-                # Check if marker is in buffer
+                # Check if marker is in buffer with proper format (marker=exit_code)
                 buffer_slice = session.buffer[start_index:]
-                marker_index = buffer_slice.find(marker)
+                marker_pattern = f"{marker}="
 
-                if marker_index >= 0:
-                    # Found marker! Parse result
-                    marker_pos = start_index + marker_index
+                # Look for the complete marker pattern followed by digits
+                import re
+
+                match = re.search(rf"{re.escape(marker_pattern)}(\d+)", buffer_slice)
+
+                if match:
+                    # Found complete marker pattern! Parse result
+                    marker_pos = start_index + match.start()
                     output_before_marker = session.buffer[:marker_pos]
 
-                    # Extract exit code from marker line
-                    marker_line_start = session.buffer.rfind("\n", 0, marker_pos) + 1
-                    marker_line_end = session.buffer.find("\n", marker_pos)
-                    if marker_line_end == -1:
-                        marker_line_end = len(session.buffer)
-                    marker_line = session.buffer[marker_line_start:marker_line_end]
-                    parts = marker_line.strip().split()
-                    exit_code = int(parts[-1]) if len(parts) >= 2 else 1
+                    # Extract exit code from the match
+                    exit_code = int(match.group(1))
 
                     # Clean up marker
                     session.markers.discard(marker)
@@ -385,8 +389,12 @@ class SSHService:
 
         try:
             # Try to send signal using asyncssh
-            await session.process.send_signal(signal_num)
-        except (AttributeError, asyncssh.Error):
+            if hasattr(session.process, "send_signal") and session.process.send_signal:
+                session.process.send_signal(signal_num)
+            else:
+                # Fallback: try to kill the process
+                session.process.kill()
+        except (AttributeError, asyncssh.Error, Exception):
             # Fallback: try to kill the process if send_signal not supported
             try:
                 session.process.kill()
@@ -536,7 +544,7 @@ class SSHService:
         """
         # Generate unique marker using UUID
         marker_id = str(uuid.uuid4()).replace("-", "")[:16]  # 16 char unique ID
-        return f"MARKER_{marker_id}"
+        return f"______END_MARKER_{marker_id}______"
 
     async def _ensure_connection(
         self,
@@ -593,11 +601,16 @@ class SSHService:
                         f"Private key file does not exist: {private_key}"
                     )
                 # Check file permissions (should not be world-readable)
-                file_stat = os.stat(private_key)
-                if file_stat.st_mode & stat.S_IROTH:
-                    raise ConnectionError(
-                        f"Private key file is world-readable: {private_key}"
-                    )
+                # Note: On Windows, we skip strict permission checks since NTFS permissions
+                # don't map directly to Unix permissions that SSH expects
+                import platform
+
+                if platform.system() != "Windows":
+                    file_stat = os.stat(private_key)
+                    if file_stat.st_mode & stat.S_IROTH:
+                        raise ConnectionError(
+                            f"Private key file is world-readable: {private_key}"
+                        )
 
             try:
                 # Prepare connection arguments
@@ -679,9 +692,15 @@ class SSHService:
                     if not data:  # EOF
                         break
 
+                    # Handle both bytes and string returns from asyncssh
+                    if isinstance(data, bytes):
+                        data = data.decode("utf-8", errors="replace")
+
+                    print(f"DEBUG: Received data: {repr(data)}")  # Debug output
+
                     # Accumulate data in buffer
                     async with session.condition:
-                        session.buffer += data.decode("utf-8", errors="replace")
+                        session.buffer += data
                         session.condition.notify_all()
 
                 except asyncio.TimeoutError:

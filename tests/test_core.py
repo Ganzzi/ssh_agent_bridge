@@ -46,9 +46,11 @@ class TestSSHService:
         marker2 = ssh_service._make_marker()
 
         assert marker1 != marker2
-        assert marker1.startswith("MARKER_")
-        assert marker2.startswith("MARKER_")
-        assert len(marker1) > 7  # MARKER_ + some content
+        assert marker1.startswith("______END_MARKER_")
+        assert marker2.startswith("______END_MARKER_")
+        assert marker1.endswith("______")
+        assert marker2.endswith("______")
+        assert len(marker1) > 20  # ______END_MARKER_ + uuid + ______
 
 
 class TestDataTypes:
@@ -344,7 +346,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",  # Add password for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -368,11 +370,11 @@ class TestCommandExecution:
                     import re
 
                     cmd = sent_commands[-1]
-                    match = re.search(r"echo\s+(\S+)\s+\$\?", cmd)
+                    match = re.search(r"echo\s+(\S+)=\"\$\?\"", cmd)
                     if match:
                         marker = match.group(1)
                         async with session.condition:
-                            session.buffer += "command output\n" + marker + " 0\n"
+                            session.buffer += "command output\n" + marker + "=0\n"
                             session.condition.notify_all()
 
             # Start the output simulation task
@@ -396,7 +398,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",  # Add password for testing
                 verify_host_key=False,  # Disable for testing
             )
 
@@ -421,11 +423,11 @@ class TestCommandExecution:
                     import re
 
                     cmd = sent_commands[-1]
-                    match = re.search(r"echo\s+(\S+)\s+\$\?", cmd)
+                    match = re.search(r"echo\s+(\S+)=\"\$\?\"", cmd)
                     if match:
                         marker = match.group(1)
                         async with session.condition:
-                            session.buffer += "command failed\n" + marker + " 1\n"
+                            session.buffer += "command failed\n" + marker + "=1\n"
                             session.condition.notify_all()
 
             # Start the output simulation task
@@ -449,7 +451,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",  # Add password for testing
             )
 
             session = ssh_service._sessions[session_id]
@@ -482,7 +484,7 @@ class TestCommandExecution:
 
             assert isinstance(result, PartialResult)
             assert result.status == "partial"
-            assert result.pending_marker.startswith("MARKER_")
+            assert result.pending_marker.startswith("______END_MARKER_")
 
     @pytest.mark.asyncio
     async def test_run_command_broken_session(self, ssh_service, mock_asyncssh):
@@ -492,7 +494,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",  # Add password for testing
                 verify_host_key=False,  # Disable for testing
             )
 
@@ -530,7 +532,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",  # Add password for testing
             )
 
             await ssh_service.end_session(session_id)
@@ -931,11 +933,11 @@ class TestBufferManagement:
                     import re
 
                     cmd = sent_commands[-1]
-                    match = re.search(r"echo\s+(\S+)\s+\$\?", cmd)
+                    match = re.search(r"echo\s+(\S+)=\"\$\?\"", cmd)
                     if match:
                         marker = match.group(1)
                         async with session.condition:
-                            session.buffer += large_output + marker + " 0\n"
+                            session.buffer += large_output + marker + "=0\n"
                             session.condition.notify_all()
 
             # Start the output simulation task
@@ -1174,18 +1176,45 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",  # Add password for testing
             )
 
             # Mock the process to simulate command output
             session = ssh_service._sessions[session_id]
-            session.process.stdout.read = AsyncMock(
-                side_effect=[
-                    b"command output\nMARKER_test123 0\n",  # First read returns marker
-                ]
-            )
+
+            # Cancel the reader task so we can control the buffer directly
+            if session.reader_task and not session.reader_task.done():
+                session.reader_task.cancel()
+                try:
+                    await session.reader_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Capture the marker that will be used
+            sent_commands = []
+            session.process.stdin.write = lambda cmd: sent_commands.append(cmd)
+
+            # Simulate asynchronously adding output to buffer
+            async def add_output_with_marker():
+                await asyncio.sleep(0.01)
+                if sent_commands:
+                    import re
+
+                    cmd = sent_commands[-1]
+                    match = re.search(r"echo\s+(\S+)=\"\$\?\"", cmd)
+                    if match:
+                        marker = match.group(1)
+                        async with session.condition:
+                            session.buffer += "command output\n" + marker + "=0\n"
+                            session.condition.notify_all()
+
+            # Start the output simulation task
+            output_task = asyncio.create_task(add_output_with_marker())
 
             result = await ssh_service.run_command(session_id, "ls -la", 5.0)
+
+            # Clean up task
+            await output_task
 
             assert result.status == "completed"
             assert result.exit_code == 0
@@ -1199,7 +1228,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",  # Add password for testing
             )
 
             # Should not raise NotImplementedError
@@ -1213,7 +1242,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",  # Add password for testing
             )
 
             # Should not raise NotImplementedError

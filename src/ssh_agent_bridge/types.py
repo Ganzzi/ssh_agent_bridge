@@ -5,8 +5,12 @@ the SSH Agent Bridge package.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Set
-from asyncssh import SSHClientConnection, SSHClientProcess
+from typing import TYPE_CHECKING, Any, Dict, Optional, Set
+
+if TYPE_CHECKING:
+    import asyncssh
+else:
+    asyncssh = None
 
 
 @dataclass
@@ -21,7 +25,7 @@ class ConnectionInfo:
         metadata: Additional connection metadata
     """
 
-    connection: Any  # asyncssh.SSHClientConnection
+    connection: "asyncssh.SSHClientConnection"
     host: str
     username: str
     agent_id: str
@@ -48,7 +52,7 @@ class SessionInfo:
     session_id: str
     agent_id: str
     connection_info: ConnectionInfo
-    process: Any  # asyncssh.SSHClientProcess
+    process: "asyncssh.SSHClientProcess"
     buffer: str
     markers: Set[str]
     reader_task: Any  # asyncio.Task
