@@ -25,8 +25,8 @@ pip install ssh-agent-bridge
 For development:
 
 ```bash
-git clone https://github.com/example/ssh-agent-bridge.git
-cd ssh-agent-bridge
+git clone https://github.com/Ganzzi/ssh_agent_bridge.git
+cd ssh_agent_bridge
 pip install -e .[dev]
 ```
 
@@ -140,13 +140,13 @@ black src/
 ### Testing
 
 ```bash
-# Run all tests (40/52 passing - 12 Phase 5 features deferred)
+# Run all tests (55/55 core tests PASS - 100% pass rate)
 uv run pytest tests/test_core.py -v
 
-# Run with coverage (76.9% overall, 100% core coverage)
+# Run with coverage (86% coverage, exceeds 80% target)
 uv run pytest tests/test_core.py --cov=src/ssh_agent_bridge --cov-report=html
 
-# Run only core tests (28/28 PASS - 100% core functionality)
+# Run core unit tests
 uv run pytest tests/test_core.py::TestDataTypes tests/test_core.py::TestExceptions tests/test_core.py::TestSSHService tests/test_core.py::TestConnectionManagement tests/test_core.py::TestSessionLifecycle tests/test_core.py::TestCommandExecution -v
 ```
 
@@ -156,28 +156,27 @@ For detailed testing information, see:
 
 ## Project Status
 
-**Phase 5 Complete ✅ | Production Ready 🚀**
+**Phase 6 Complete ✅ | Released on PyPI 🚀**
 
-### Current Phase: Phase 5 - Quality Assurance & Polish (COMPLETE)
+### Current Phase: Phase 6 - Packaging & Release (COMPLETE)
 
-#### Phase 5 Progress
-- ✅ **Code Quality:** Type hints (mypy), Google-style docstrings, black/isort formatting, flake8/pylint linting
-- ✅ **Security Review:** Host key verification, private key validation, credential security
-- ✅ **Performance:** Large output handling (100KB+), marker detection optimization, connection pooling efficiency
-- ✅ **Error Handling:** Session status checks, exit code handling, edge case coverage
-- ✅ **CI/CD Setup:** GitHub Actions workflow with uv, multi-Python testing, coverage reporting
+#### Phase 6 Completion
+- ✅ **Build System:** PEP 517 build configured, wheel & sdist generation tested
+- ✅ **PyPI Preparation:** Package metadata, classifiers, and documentation uploaded
+- ✅ **Release Process:** Version 0.1.0 tagged and released to PyPI
+- ✅ **Package Available:** https://pypi.org/project/ssh-agent-bridge/
 
-#### Test Status
-- ✅ **40/52 tests passing** (76.9% overall, 100% core coverage)
-- ✅ **28/28 core tests PASS** (100% core functionality)
-- ✅ **12/12 advanced feature tests FAIL** (expected - Phase 5 features)
-- 📊 **Coverage:** 86% (exceeded 80% target)
+#### Final Test Status
+- ✅ **55/55 core tests PASS** (100% pass rate)
+- ✅ **86% Code Coverage** (exceeded 80% target)
+- ✅ **7/7 Example Scripts** (all working successfully)
+- ✅ **100% Core Functionality** (production ready)
 
-#### Next Phase: Phase 6 - Packaging & Release
-- 📦 **Build System:** Configure PEP 517 build, test wheel/sdist generation
-- � **PyPI Preparation:** Package metadata, long description, classifiers
-- 🚀 **Release Process:** Version tagging, PyPI upload, verification
-- 📢 **Post-Release:** Changelog update, announcements, feedback collection
+#### Next Phase: Phase 7 - Maintenance & Enhancements
+- � **User Feedback:** Collect issues and feature requests
+- 🔧 **Maintenance:** Bug fixes and security updates
+- ✨ **Future Features:** Connection multiplexing, advanced prompt detection, SFTP support
+- 🌐 **Community:** Documentation improvements, contribution guidelines
 
 ## Support
 

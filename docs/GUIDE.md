@@ -26,7 +26,7 @@ pip install ssh-agent-bridge
 ### From Source
 
 ```bash
-git clone https://github.com/your-org/ssh-agent-bridge.git
+git clone https://github.com/Ganzzi/ssh_agent_bridge.git
 cd ssh-agent-bridge
 pip install -e .
 ```

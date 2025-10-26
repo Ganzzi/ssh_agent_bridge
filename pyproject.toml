@@ -42,11 +42,11 @@ dev = [
 docs = ["sphinx>=4.0.0", "sphinx-rtd-theme>=1.0.0"]
 
 [project.urls]
-Homepage = "https://github.com/example/ssh-agent-bridge"
+Homepage = "https://github.com/Ganzzi/ssh_agent_bridge"
 Documentation = "https://ssh-agent-bridge.readthedocs.io/"
-Repository = "https://github.com/example/ssh-agent-bridge.git"
-Issues = "https://github.com/example/ssh-agent-bridge/issues"
-Changelog = "https://github.com/example/ssh-agent-bridge/blob/main/CHANGELOG.md"
+Repository = "https://github.com/Ganzzi/ssh_agent_bridge.git"
+Issues = "https://github.com/Ganzzi/ssh_agent_bridge/issues"
+Changelog = "https://github.com/Ganzzi/ssh_agent_bridge/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 zip-safe = false
@@ -150,8 +150,4 @@ exclude_lines = [
 ]
 
 [dependency-groups]
-dev = [
-    "pydocstyle>=6.3.0",
-    "pylint>=3.2.7",
-    "pytest-cov>=5.0.0",
-]
+dev = ["pydocstyle>=6.3.0", "pylint>=3.2.7", "pytest-cov>=5.0.0"]
