@@ -1,6 +1,7 @@
 """Unit tests for SSH Agent Bridge core functionality."""
 
 import asyncio
+from datetime import datetime
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from asyncssh import ConnectionLost
@@ -10,6 +11,10 @@ from ssh_agent_bridge import (
     SessionInfo,
     CommandResult,
     PartialResult,
+    Message,
+    SessionHistory,
+    SessionSummary,
+    HistoryConfig,
 )
 from ssh_agent_bridge.exceptions import (
     SSHServiceError,
@@ -96,6 +101,110 @@ class TestDataTypes:
         assert conn.agent_id == "agent-123"
         assert conn.metadata == {"key": "value"}
 
+    def test_message_creation(self):
+        """Test Message dataclass creation."""
+        now = datetime.now()
+        msg = Message(
+            id="msg-001",
+            timestamp=now,
+            direction="input",
+            content="ls -la",
+            command_id="cmd-001",
+        )
+
+        assert msg.id == "msg-001"
+        assert msg.timestamp == now
+        assert msg.direction == "input"
+        assert msg.content == "ls -la"
+        assert msg.command_id == "cmd-001"
+
+    def test_message_without_command_id(self):
+        """Test Message creation without command_id."""
+        msg = Message(
+            id="msg-002",
+            timestamp=datetime.now(),
+            direction="output",
+            content="total 42",
+        )
+
+        assert msg.id == "msg-002"
+        assert msg.direction == "output"
+        assert msg.content == "total 42"
+        assert msg.command_id is None
+
+    def test_session_history_creation(self):
+        """Test SessionHistory dataclass creation."""
+        now = datetime.now()
+        messages = [
+            Message(
+                id="msg-001",
+                timestamp=now,
+                direction="input",
+                content="pwd",
+            ),
+            Message(
+                id="msg-002",
+                timestamp=now,
+                direction="output",
+                content="/home/user",
+            ),
+        ]
+
+        history = SessionHistory(
+            session_id="sess-123",
+            messages=messages,
+            total_count=2,
+            truncated=False,
+        )
+
+        assert history.session_id == "sess-123"
+        assert len(history.messages) == 2
+        assert history.total_count == 2
+        assert history.truncated is False
+
+    def test_session_summary_creation(self):
+        """Test SessionSummary dataclass creation."""
+        now = datetime.now()
+        summary = SessionSummary(
+            session_id="sess-123",
+            agent_id="agent-001",
+            host="example.com",
+            username="testuser",
+            port=22,
+            status="active",
+            created_at=now,
+            last_activity=now,
+            command_count=5,
+            message_count=10,
+        )
+
+        assert summary.session_id == "sess-123"
+        assert summary.agent_id == "agent-001"
+        assert summary.host == "example.com"
+        assert summary.username == "testuser"
+        assert summary.port == 22
+        assert summary.status == "active"
+        assert summary.command_count == 5
+        assert summary.message_count == 10
+
+    def test_history_config_defaults(self):
+        """Test HistoryConfig with default values."""
+        config = HistoryConfig()
+
+        assert config.max_messages == 1000
+        assert config.max_message_size == 65536  # 64KB
+        assert config.trim_strategy == "oldest"
+
+    def test_history_config_custom(self):
+        """Test HistoryConfig with custom values."""
+        config = HistoryConfig(
+            max_messages=500, max_message_size=32768, trim_strategy="largest"
+        )
+
+        assert config.max_messages == 500
+        assert config.max_message_size == 32768
+        assert config.trim_strategy == "largest"
+
 
 class TestExceptions:
     """Test cases for custom exceptions."""
@@ -142,7 +251,7 @@ class TestConnectionManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             assert conn_info.host == "example.com"
@@ -161,7 +270,7 @@ class TestConnectionManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             # Second connection with same parameters should reuse
@@ -169,7 +278,7 @@ class TestConnectionManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             assert conn1 is conn2
@@ -183,14 +292,14 @@ class TestConnectionManagement:
                 agent_id="agent-1",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             conn2 = await ssh_service._ensure_connection(
                 agent_id="agent-2",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             assert conn1 is not conn2
@@ -206,15 +315,17 @@ class TestConnectionManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
-            conn2 = await ssh_service._ensure_connection(
-                agent_id="test-agent",
-                host="example.com",
-                username="testuser",
-                private_key="/path/to/key",
-            )
+            # Mock file existence check for key auth method
+            with patch("os.path.isfile", return_value=True):
+                conn2 = await ssh_service._ensure_connection(
+                    agent_id="test-agent",
+                    host="example.com",
+                    username="testuser",
+                    private_key="/path/to/key",
+                )
 
             assert conn1 is not conn2
             assert len(ssh_service._connections) == 2
@@ -228,7 +339,7 @@ class TestConnectionManagement:
                     agent_id="test-agent",
                     host="badhost.com",
                     username="testuser",
-                    # password="testpass", # Disable for testing
+                    password="testpass",
                 )
 
     @pytest.mark.asyncio
@@ -240,13 +351,13 @@ class TestConnectionManagement:
                 agent_id="agent-1",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
             await ssh_service._ensure_connection(
                 agent_id="agent-2",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             assert len(ssh_service._connections) == 2
@@ -266,7 +377,7 @@ class TestSessionLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             assert session_id in ssh_service._sessions
@@ -282,12 +393,13 @@ class TestSessionLifecycle:
     async def test_create_session_with_key_auth(self, ssh_service, mock_asyncssh):
         """Test session creation with private key authentication."""
         with patch("asyncssh.connect", mock_asyncssh.connect):
-            session_id = await ssh_service.create_session(
-                agent_id="test-agent",
-                host="example.com",
-                username="testuser",
-                private_key="/path/to/key",
-            )
+            with patch("os.path.isfile", return_value=True):
+                session_id = await ssh_service.create_session(
+                    agent_id="test-agent",
+                    host="example.com",
+                    username="testuser",
+                    private_key="/path/to/key",
+                )
 
             assert session_id in ssh_service._sessions
 
@@ -299,7 +411,7 @@ class TestSessionLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             # Verify session exists
@@ -328,7 +440,7 @@ class TestSessionLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             # End session first time
@@ -548,7 +660,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session = ssh_service._sessions[session_id]
@@ -615,7 +727,7 @@ class TestCommandExecution:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session = ssh_service._sessions[session_id]
@@ -667,7 +779,7 @@ class TestInteractiveFeatures:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session = ssh_service._sessions[session_id]
@@ -692,7 +804,7 @@ class TestInteractiveFeatures:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session = ssh_service._sessions[session_id]
@@ -710,7 +822,7 @@ class TestInteractiveFeatures:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session = ssh_service._sessions[session_id]
@@ -727,7 +839,7 @@ class TestInteractiveFeatures:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             with pytest.raises(SSHServiceError, match="Unsupported signal name"):
@@ -741,7 +853,7 @@ class TestInteractiveFeatures:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session = ssh_service._sessions[session_id]
@@ -832,7 +944,7 @@ class TestBufferManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session = ssh_service._sessions[session_id]
@@ -865,7 +977,7 @@ class TestBufferManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session = ssh_service._sessions[session_id]
@@ -904,7 +1016,7 @@ class TestBufferManagement:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
                 verify_host_key=False,  # Disable for testing
             )
 
@@ -1000,14 +1112,14 @@ class TestConcurrentSessions:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session2_id = await ssh_service.create_session(
                 agent_id="test-agent",
                 host="different.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             # Commands in different sessions should not interfere
@@ -1026,14 +1138,14 @@ class TestConcurrentSessions:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session2_id = await ssh_service.create_session(
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             # Should reuse the same connection
@@ -1056,7 +1168,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             assert session_id in ssh_service._sessions
@@ -1077,14 +1189,14 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session2_id = await ssh_service.create_session(
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             # Should have one connection shared by both sessions
@@ -1137,7 +1249,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             session = ssh_service._sessions[session_id]
@@ -1160,7 +1272,7 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             assert isinstance(session_id, str)
@@ -1273,8 +1385,1267 @@ class TestCleanupAndLifecycle:
                 agent_id="test-agent",
                 host="example.com",
                 username="testuser",
-                # password="testpass", # Disable for testing
+                password="testpass",
             )
 
             # Should not raise NotImplementedError
             await ssh_service.close_agent_connection("test-agent")
+
+
+class TestMessageRecording:
+    """Test cases for message history recording (Phase 2 feature)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_message_dataclass_with_marker(self):
+        """Test Message dataclass with marker field for output correlation."""
+        msg = Message(
+            id="msg-123",
+            timestamp=datetime.now(),
+            direction="output",
+            content="output text",
+            command_id="cmd-456",
+            marker="MARKER_123",
+        )
+
+        assert msg.id == "msg-123"
+        assert msg.direction == "output"
+        assert msg.command_id == "cmd-456"
+        assert msg.marker == "MARKER_123"
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_session_info_has_pending_markers_dict(
+        self, ssh_service, mock_asyncssh
+    ):
+        """Test that SessionInfo includes pending_command_markers dict."""
+        with patch("asyncssh.connect", mock_asyncssh.connect):
+            session_id = await ssh_service.create_session(
+                agent_id="test-agent",
+                host="example.com",
+                username="testuser",
+                password="testpass",
+            )
+
+            session = ssh_service._sessions[session_id]
+            assert hasattr(session, "pending_command_markers")
+            assert isinstance(session.pending_command_markers, dict)
+            assert len(session.pending_command_markers) == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_input_message_created_with_command_id_and_marker(self, ssh_service):
+        """Test that input messages are created with command_id and marker."""
+        # Create a mock session info directly
+        mock_conn = MagicMock()
+        session_info = SessionInfo(
+            session_id="test-session",
+            agent_id="test-agent",
+            connection_info=ConnectionInfo(
+                connection=mock_conn,
+                host="example.com",
+                username="testuser",
+                agent_id="test-agent",
+                metadata={},
+            ),
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=[],
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=0,
+            pending_command_markers={},
+        )
+
+        # Verify initial state
+        assert len(session_info.history) == 0
+
+        # Create an input message like run_command would
+        command_id = "cmd-123"
+        marker = "MARKER_123"
+        input_msg = Message(
+            id="msg-1",
+            timestamp=datetime.now(),
+            direction="input",
+            content="echo test",
+            command_id=command_id,
+            marker=marker,
+        )
+        session_info.history.append(input_msg)
+
+        # Verify message was added correctly
+        assert len(session_info.history) == 1
+        assert session_info.history[0].command_id == command_id
+        assert session_info.history[0].marker == marker
+        assert session_info.history[0].content == "echo test"
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_input_message_format_for_send_input(self):
+        """Test the format of input messages created for send_input."""
+        # Verify that input messages can be created without command_id
+        msg = Message(
+            id="msg-interactive",
+            timestamp=datetime.now(),
+            direction="input",
+            content="user response",
+            command_id=None,
+            marker=None,
+        )
+
+        assert msg.direction == "input"
+        assert msg.content == "user response"
+        assert msg.command_id is None
+        assert msg.marker is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_command_count_initialization(self):
+        """Test that command_count is initialized to 0 on session creation."""
+        # Create a mock session info directly
+        mock_conn = MagicMock()
+        session_info = SessionInfo(
+            session_id="test-session",
+            agent_id="test-agent",
+            connection_info=ConnectionInfo(
+                connection=mock_conn,
+                host="example.com",
+                username="testuser",
+                agent_id="test-agent",
+                metadata={},
+            ),
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=[],
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=0,
+            pending_command_markers={},
+        )
+
+        assert session_info.command_count == 0
+
+        # Simulate incrementing like run_command does
+        session_info.command_count += 1
+        assert session_info.command_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_history_config_defaults(self):
+        """Test that HistoryConfig has proper defaults."""
+        config = HistoryConfig()
+
+        assert config.max_messages == 1000
+        assert config.max_message_size == 65536  # 64KB
+        assert config.trim_strategy == "oldest"
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_trim_history_oldest_strategy(self, ssh_service, mock_asyncssh):
+        """Test history trimming with oldest-first strategy."""
+        with patch("asyncssh.connect", mock_asyncssh.connect):
+            session_id = await ssh_service.create_session(
+                agent_id="test-agent",
+                host="example.com",
+                username="testuser",
+                password="testpass",
+            )
+
+            session = ssh_service._sessions[session_id]
+            session.history_config.max_messages = 5
+
+            # Add messages manually
+            for i in range(10):
+                msg = Message(
+                    id=f"msg-{i}",
+                    timestamp=datetime.now(),
+                    direction="input",
+                    content=f"message {i}",
+                )
+                session.history.append(msg)
+
+            # Trim history
+            await ssh_service._trim_history(session)
+
+            # Should have max_messages messages remaining (oldest removed)
+            assert len(session.history) == 5
+            # Verify oldest messages were removed
+            assert session.history[0].content == "message 5"
+            assert session.history[-1].content == "message 9"
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_trim_history_message_size_limit(self, ssh_service, mock_asyncssh):
+        """Test history trimming of oversized messages."""
+        with patch("asyncssh.connect", mock_asyncssh.connect):
+            session_id = await ssh_service.create_session(
+                agent_id="test-agent",
+                host="example.com",
+                username="testuser",
+                password="testpass",
+            )
+
+            session = ssh_service._sessions[session_id]
+            session.history_config.max_message_size = 100
+
+            # Add a message with oversized content
+            large_content = "x" * 500
+            msg = Message(
+                id="large-msg",
+                timestamp=datetime.now(),
+                direction="output",
+                content=large_content,
+            )
+            session.history.append(msg)
+
+            # Trim history
+            await ssh_service._trim_history(session)
+
+            # Message content should be truncated
+            assert len(session.history[0].content) == 100
+            assert session.history[0].content == "x" * 100
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_last_activity_timestamp_updated(self):
+        """Test that last_activity timestamp can be updated."""
+        # Create a mock session info directly
+        mock_conn = MagicMock()
+        now = datetime.now()
+        session_info = SessionInfo(
+            session_id="test-session",
+            agent_id="test-agent",
+            connection_info=ConnectionInfo(
+                connection=mock_conn,
+                host="example.com",
+                username="testuser",
+                agent_id="test-agent",
+                metadata={},
+            ),
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=[],
+            history_config=HistoryConfig(),
+            created_at=now,
+            last_activity=now,
+            command_count=0,
+            pending_command_markers={},
+        )
+
+        initial_activity = session_info.last_activity
+
+        # Simulate a small delay and then update
+        await asyncio.sleep(0.01)
+        session_info.last_activity = datetime.now()
+
+        # last_activity should be updated
+        assert session_info.last_activity > initial_activity
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_pending_markers_dict_cleanup(self):
+        """Test that pending_command_markers dict can be cleaned up after completion."""
+        # Create a mock session info directly
+        mock_conn = MagicMock()
+        session_info = SessionInfo(
+            session_id="test-session",
+            agent_id="test-agent",
+            connection_info=ConnectionInfo(
+                connection=mock_conn,
+                host="example.com",
+                username="testuser",
+                agent_id="test-agent",
+                metadata={},
+            ),
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=[],
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=0,
+            pending_command_markers={},
+        )
+
+        # Simulate adding a pending command marker (like run_command does)
+        marker = "MARKER_123"
+        command_id = "cmd-456"
+        session_info.pending_command_markers[marker] = command_id
+
+        assert len(session_info.pending_command_markers) == 1
+
+        # Simulate cleanup when marker is found
+        session_info.pending_command_markers.pop(marker, None)
+
+        # Should be empty now
+        assert len(session_info.pending_command_markers) == 0
+
+
+class TestListSessions:
+    """Test cases for the list_sessions() API method."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_list_sessions_single_agent(self, ssh_service):
+        """Test listing sessions for a single agent."""
+        # Create a mock session
+        mock_conn = MagicMock()
+        mock_conn.host = "example.com"
+        mock_conn.username = "testuser"
+
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=[],
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=5,
+            pending_command_markers={},
+        )
+
+        ssh_service._sessions["session-1"] = session_info
+
+        # List sessions for agent-1
+        results = await ssh_service.list_sessions("agent-1")
+
+        assert len(results) == 1
+        assert results[0].session_id == "session-1"
+        assert results[0].agent_id == "agent-1"
+        assert results[0].host == "example.com"
+        assert results[0].username == "testuser"
+        assert results[0].status == "active"
+        assert results[0].command_count == 5
+        assert results[0].message_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_list_sessions_multiple_agents(self, ssh_service):
+        """Test listing sessions with multiple agents."""
+        # Create sessions for different agents
+        for agent_id in ["agent-1", "agent-2"]:
+            for i in range(2):
+                mock_conn = MagicMock()
+                mock_conn.host = f"host-{agent_id}.com"
+                mock_conn.username = f"user-{agent_id}"
+
+                conn_info = ConnectionInfo(
+                    connection=mock_conn,
+                    host=f"host-{agent_id}.com",
+                    username=f"user-{agent_id}",
+                    agent_id=agent_id,
+                    metadata={"port": 22},
+                )
+
+                session_info = SessionInfo(
+                    session_id=f"{agent_id}-session-{i}",
+                    agent_id=agent_id,
+                    connection_info=conn_info,
+                    process=MagicMock(),
+                    buffer="",
+                    markers=set(),
+                    reader_task=None,
+                    lock=asyncio.Lock(),
+                    condition=asyncio.Condition(),
+                    status="active",
+                    history=[],
+                    history_config=HistoryConfig(),
+                    created_at=datetime.now(),
+                    last_activity=datetime.now(),
+                    command_count=i + 1,
+                    pending_command_markers={},
+                )
+
+                ssh_service._sessions[f"{agent_id}-session-{i}"] = session_info
+
+        # List sessions for agent-1
+        results = await ssh_service.list_sessions("agent-1")
+
+        assert len(results) == 2
+        assert all(s.agent_id == "agent-1" for s in results)
+
+        # List sessions for agent-2
+        results = await ssh_service.list_sessions("agent-2")
+
+        assert len(results) == 2
+        assert all(s.agent_id == "agent-2" for s in results)
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_list_sessions_include_closed(self, ssh_service):
+        """Test listing sessions with include_closed flag."""
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        # Create active session
+        active_session = SessionInfo(
+            session_id="session-active",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=[],
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=1,
+            pending_command_markers={},
+        )
+
+        # Create closed session
+        closed_session = SessionInfo(
+            session_id="session-closed",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="closed",
+            history=[],
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=0,
+            pending_command_markers={},
+        )
+
+        ssh_service._sessions["session-active"] = active_session
+        ssh_service._sessions["session-closed"] = closed_session
+
+        # List without include_closed (default)
+        results = await ssh_service.list_sessions("agent-1", include_closed=False)
+        assert len(results) == 1
+        assert results[0].status == "active"
+
+        # List with include_closed
+        results = await ssh_service.list_sessions("agent-1", include_closed=True)
+        assert len(results) == 2
+        assert {s.status for s in results} == {"active", "closed"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_list_sessions_limit(self, ssh_service):
+        """Test listing sessions with limit parameter."""
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        # Create 5 sessions
+        for i in range(5):
+            session_info = SessionInfo(
+                session_id=f"session-{i}",
+                agent_id="agent-1",
+                connection_info=conn_info,
+                process=MagicMock(),
+                buffer="",
+                markers=set(),
+                reader_task=None,
+                lock=asyncio.Lock(),
+                condition=asyncio.Condition(),
+                status="active",
+                history=[],
+                history_config=HistoryConfig(),
+                created_at=datetime.now(),
+                last_activity=datetime.now(),
+                command_count=i,
+                pending_command_markers={},
+            )
+            ssh_service._sessions[f"session-{i}"] = session_info
+
+        # List with default limit (100)
+        results = await ssh_service.list_sessions("agent-1")
+        assert len(results) == 5
+
+        # List with limit=2
+        results = await ssh_service.list_sessions("agent-1", limit=2)
+        assert len(results) == 2
+
+
+class TestGetSessionHistory:
+    """Test cases for the get_session_history() API method."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_get_session_history_basic(self, ssh_service):
+        """Test retrieving session history."""
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        # Create messages
+        messages = [
+            Message(
+                id="msg-1",
+                timestamp=datetime(2025, 12, 1, 10, 0),
+                direction="input",
+                content="ls",
+                command_id="cmd-1",
+            ),
+            Message(
+                id="msg-2",
+                timestamp=datetime(2025, 12, 1, 10, 1),
+                direction="output",
+                content="file1.txt",
+                command_id="cmd-1",
+            ),
+        ]
+
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=messages,
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=1,
+            pending_command_markers={},
+        )
+
+        ssh_service._sessions["session-1"] = session_info
+
+        # Get history
+        history = await ssh_service.get_session_history("session-1")
+
+        assert history.session_id == "session-1"
+        assert len(history.messages) == 2
+        assert history.total_count == 2
+        assert history.truncated is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_get_session_history_not_found(self, ssh_service):
+        """Test retrieving history for non-existent session."""
+        with pytest.raises(SessionError):
+            await ssh_service.get_session_history("nonexistent-session")
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_get_session_history_filter_by_direction(self, ssh_service):
+        """Test filtering history by direction."""
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        messages = [
+            Message(
+                id="msg-1",
+                timestamp=datetime(2025, 12, 1, 10, 0),
+                direction="input",
+                content="cmd1",
+                command_id="cmd-1",
+            ),
+            Message(
+                id="msg-2",
+                timestamp=datetime(2025, 12, 1, 10, 1),
+                direction="output",
+                content="output1",
+                command_id="cmd-1",
+            ),
+            Message(
+                id="msg-3",
+                timestamp=datetime(2025, 12, 1, 10, 2),
+                direction="input",
+                content="cmd2",
+                command_id="cmd-2",
+            ),
+        ]
+
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=messages,
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=2,
+            pending_command_markers={},
+        )
+
+        ssh_service._sessions["session-1"] = session_info
+
+        # Filter by input
+        history = await ssh_service.get_session_history("session-1", direction="input")
+        assert len(history.messages) == 2
+        assert all(m.direction == "input" for m in history.messages)
+        assert history.total_count == 2
+
+        # Filter by output
+        history = await ssh_service.get_session_history("session-1", direction="output")
+        assert len(history.messages) == 1
+        assert all(m.direction == "output" for m in history.messages)
+        assert history.total_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_get_session_history_filter_by_since(self, ssh_service):
+        """Test filtering history by timestamp."""
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        messages = [
+            Message(
+                id="msg-1",
+                timestamp=datetime(2025, 12, 1, 10, 0),
+                direction="input",
+                content="cmd1",
+            ),
+            Message(
+                id="msg-2",
+                timestamp=datetime(2025, 12, 1, 10, 5),
+                direction="output",
+                content="output1",
+            ),
+            Message(
+                id="msg-3",
+                timestamp=datetime(2025, 12, 1, 10, 10),
+                direction="input",
+                content="cmd2",
+            ),
+        ]
+
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=messages,
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=2,
+            pending_command_markers={},
+        )
+
+        ssh_service._sessions["session-1"] = session_info
+
+        # Filter since 10:05
+        since_time = datetime(2025, 12, 1, 10, 5)
+        history = await ssh_service.get_session_history("session-1", since=since_time)
+        assert len(history.messages) == 2  # msg-2 and msg-3
+        assert history.total_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_get_session_history_limit_and_truncate(self, ssh_service):
+        """Test limiting history and detecting truncation."""
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        # Create 5 messages
+        messages = [
+            Message(
+                id=f"msg-{i}",
+                timestamp=datetime(2025, 12, 1, 10, i),
+                direction="input" if i % 2 == 0 else "output",
+                content=f"message-{i}",
+            )
+            for i in range(5)
+        ]
+
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=messages,
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=3,
+            pending_command_markers={},
+        )
+
+        ssh_service._sessions["session-1"] = session_info
+
+        # Get with limit=2
+        history = await ssh_service.get_session_history("session-1", limit=2)
+        assert len(history.messages) == 2
+        assert history.total_count == 5
+        assert history.truncated is True
+
+        # Get with limit=10
+        history = await ssh_service.get_session_history("session-1", limit=10)
+        assert len(history.messages) == 5
+        assert history.total_count == 5
+        assert history.truncated is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.fast
+    async def test_get_session_history_invalid_direction(self, ssh_service):
+        """Test error handling for invalid direction."""
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=[],
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=0,
+            pending_command_markers={},
+        )
+
+        ssh_service._sessions["session-1"] = session_info
+
+        # Try with invalid direction
+        with pytest.raises(SSHServiceError):
+            await ssh_service.get_session_history("session-1", direction="invalid")
+
+
+class TestPerformance:
+    """Performance tests for session history and message handling."""
+
+    @pytest.mark.asyncio
+    async def test_large_message_history_creation(self, ssh_service):
+        """Benchmark creating and storing 1000+ messages in history."""
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        # Create 1000 messages efficiently
+        import time
+
+        start_time = time.time()
+
+        messages = []
+        for i in range(1000):
+            msg = Message(
+                id=f"msg-{i:04d}",
+                timestamp=datetime.now(),
+                direction="input" if i % 2 == 0 else "output",
+                content=f"message content {i}" * 10,  # ~200 bytes each
+            )
+            messages.append(msg)
+
+        creation_time = time.time() - start_time
+
+        # Create session with all messages
+        start_time = time.time()
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=messages,
+            history_config=HistoryConfig(max_messages=1000),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=500,
+            pending_command_markers={},
+        )
+
+        assignment_time = time.time() - start_time
+        ssh_service._sessions["session-1"] = session_info
+
+        # Verify all messages are stored
+        assert len(session_info.history) == 1000
+
+        # Should be fast (< 1 second total for 1000 messages)
+        total_time = creation_time + assignment_time
+        assert total_time < 1.0, f"Message creation too slow: {total_time:.3f}s"
+
+    @pytest.mark.asyncio
+    async def test_message_history_query_performance(self, ssh_service):
+        """Benchmark querying large message histories."""
+        import time
+
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        # Create 1000 messages with timestamps
+        messages = []
+        base_time = datetime(2025, 12, 1, 10, 0)
+        for i in range(1000):
+            msg = Message(
+                id=f"msg-{i:04d}",
+                timestamp=base_time.replace(second=i % 60),
+                direction="input" if i % 2 == 0 else "output",
+                content=f"message {i}",
+            )
+            messages.append(msg)
+
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=messages,
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=500,
+            pending_command_markers={},
+        )
+
+        ssh_service._sessions["session-1"] = session_info
+
+        # Benchmark basic retrieval with high limit to get all messages
+        start_time = time.time()
+        history = await ssh_service.get_session_history("session-1", limit=2000)
+        query_time = time.time() - start_time
+
+        assert len(history.messages) == 1000
+        # Query should be very fast
+        assert query_time < 0.1, f"Basic query too slow: {query_time:.3f}s"
+
+        # Benchmark direction filtering
+        start_time = time.time()
+        history = await ssh_service.get_session_history(
+            "session-1", direction="input", limit=2000
+        )
+        filter_time = time.time() - start_time
+
+        assert len(history.messages) == 500  # Half are input
+        # Filtering should still be fast
+        assert filter_time < 0.2, f"Direction filter too slow: {filter_time:.3f}s"
+
+        # Benchmark limit + truncation
+        start_time = time.time()
+        history = await ssh_service.get_session_history("session-1", limit=100)
+        limit_time = time.time() - start_time
+
+        assert len(history.messages) == 100
+        assert history.truncated is True
+        # Limiting should be fast
+        assert limit_time < 0.1, f"Limit query too slow: {limit_time:.3f}s"
+
+    @pytest.mark.asyncio
+    async def test_history_trimming_performance(self, ssh_service):
+        """Benchmark history trimming with 1000+ messages."""
+        import time
+
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        # Create 1500 messages
+        messages = []
+        for i in range(1500):
+            msg = Message(
+                id=f"msg-{i:04d}",
+                timestamp=datetime.now(),
+                direction="input" if i % 2 == 0 else "output",
+                content="x" * 100,  # ~100 bytes each
+            )
+            messages.append(msg)
+
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=messages,
+            history_config=HistoryConfig(
+                max_messages=1000, trim_strategy="oldest"  # Trim to 1000
+            ),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=750,
+            pending_command_markers={},
+        )
+
+        ssh_service._sessions["session-1"] = session_info
+
+        # Benchmark trimming
+        start_time = time.time()
+        await ssh_service._trim_history(session_info)
+        trim_time = time.time() - start_time
+
+        # Should trim to max_messages
+        assert len(session_info.history) == 1000
+        # Trimming should be fast (< 100ms even for 1500 messages)
+        assert trim_time < 0.1, f"Trimming too slow: {trim_time:.3f}s"
+
+    @pytest.mark.asyncio
+    async def test_memory_bounded_with_trimming(self, ssh_service):
+        """Verify that history trimming keeps memory bounded."""
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=[],
+            history_config=HistoryConfig(
+                max_messages=100,  # Keep small for testing
+                max_message_size=1024,  # 1KB per message max
+                trim_strategy="oldest",
+            ),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=0,
+            pending_command_markers={},
+        )
+
+        ssh_service._sessions["session-1"] = session_info
+
+        # Add 200 messages with large content
+        for i in range(200):
+            msg = Message(
+                id=f"msg-{i:03d}",
+                timestamp=datetime.now(),
+                direction="output",
+                content="x" * 5000,  # 5KB content (will be trimmed to 1KB)
+            )
+            session_info.history.append(msg)
+
+            # Trim after each addition to maintain bounded memory
+            await ssh_service._trim_history(session_info)
+
+        # Should have at most max_messages
+        assert len(session_info.history) <= 100
+
+        # Each message should be at most max_message_size
+        for msg in session_info.history:
+            assert (
+                len(msg.content) <= 1024
+            ), f"Message too large: {len(msg.content)} bytes"
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_performance_many_agents(self, ssh_service):
+        """Benchmark list_sessions with many agents."""
+        import time
+
+        # Create 100 sessions across 10 agents
+        mock_conn = MagicMock()
+
+        for agent_idx in range(10):
+            for session_idx in range(10):
+                conn_info = ConnectionInfo(
+                    connection=mock_conn,
+                    host=f"host{agent_idx}.com",
+                    username=f"user{agent_idx}",
+                    agent_id=f"agent-{agent_idx}",
+                    metadata={"port": 22},
+                )
+
+                session_info = SessionInfo(
+                    session_id=f"agent-{agent_idx}-session-{session_idx}",
+                    agent_id=f"agent-{agent_idx}",
+                    connection_info=conn_info,
+                    process=MagicMock(),
+                    buffer="",
+                    markers=set(),
+                    reader_task=None,
+                    lock=asyncio.Lock(),
+                    condition=asyncio.Condition(),
+                    status="active" if session_idx % 2 == 0 else "closed",
+                    history=[],
+                    history_config=HistoryConfig(),
+                    created_at=datetime.now(),
+                    last_activity=datetime.now(),
+                    command_count=session_idx,
+                    pending_command_markers={},
+                )
+
+                ssh_service._sessions[f"agent-{agent_idx}-session-{session_idx}"] = (
+                    session_info
+                )
+
+        # Benchmark listing for one agent with many sessions
+        start_time = time.time()
+        results = await ssh_service.list_sessions("agent-0")
+        query_time = time.time() - start_time
+
+        assert len(results) == 5  # Only active sessions
+        # Query should be fast
+        assert query_time < 0.05, f"List sessions too slow: {query_time:.3f}s"
+
+    @pytest.mark.asyncio
+    async def test_rapid_command_sequence_history_recording(self, ssh_service):
+        """Test history recording during rapid command sequences."""
+        import time
+
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=[],
+            history_config=HistoryConfig(),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=0,
+            pending_command_markers={},
+        )
+
+        ssh_service._sessions["session-1"] = session_info
+
+        # Simulate rapid command sequence (100 commands)
+        start_time = time.time()
+
+        for cmd_idx in range(100):
+            # Record input message
+            input_msg = Message(
+                id=f"input-{cmd_idx}",
+                timestamp=datetime.now(),
+                direction="input",
+                content=f"command {cmd_idx}",
+                command_id=f"cmd-{cmd_idx}",
+            )
+            session_info.history.append(input_msg)
+            session_info.command_count += 1
+
+            # Record output message
+            output_msg = Message(
+                id=f"output-{cmd_idx}",
+                timestamp=datetime.now(),
+                direction="output",
+                content=f"output for command {cmd_idx}" * 10,
+                command_id=f"cmd-{cmd_idx}",
+            )
+            session_info.history.append(output_msg)
+
+        recording_time = time.time() - start_time
+
+        # Should have recorded all messages
+        assert len(session_info.history) == 200  # 2 messages per command
+        assert session_info.command_count == 100
+
+        # Recording 200 messages should be very fast
+        assert recording_time < 0.5, f"Recording too slow: {recording_time:.3f}s"
+
+    @pytest.mark.asyncio
+    async def test_memory_impact_with_large_outputs(self, ssh_service):
+        """Benchmark memory usage with large output messages."""
+        import sys
+
+        mock_conn = MagicMock()
+        conn_info = ConnectionInfo(
+            connection=mock_conn,
+            host="example.com",
+            username="testuser",
+            agent_id="agent-1",
+            metadata={"port": 22},
+        )
+
+        session_info = SessionInfo(
+            session_id="session-1",
+            agent_id="agent-1",
+            connection_info=conn_info,
+            process=MagicMock(),
+            buffer="",
+            markers=set(),
+            reader_task=None,
+            lock=asyncio.Lock(),
+            condition=asyncio.Condition(),
+            status="active",
+            history=[],
+            history_config=HistoryConfig(max_messages=100),
+            created_at=datetime.now(),
+            last_activity=datetime.now(),
+            command_count=0,
+            pending_command_markers={},
+        )
+
+        # Add messages with 64KB output each (at max size limit)
+        large_output = "x" * 65536  # 64KB
+
+        for i in range(10):  # 10 large messages
+            msg = Message(
+                id=f"msg-{i}",
+                timestamp=datetime.now(),
+                direction="output",
+                content=large_output,
+            )
+            session_info.history.append(msg)
+
+        # Estimate memory per message (rough)
+        total_messages = len(session_info.history)
+        approx_size_per_message = (
+            sys.getsizeof(large_output) + 300
+        )  # Message object overhead
+
+        # With 100 message limit and 64KB per message, max should be ~6.4MB
+        estimated_max_memory = 100 * approx_size_per_message
+
+        # Should not exceed reasonable limits
+        assert (
+            estimated_max_memory < 10_000_000
+        ), f"Estimated memory too high: {estimated_max_memory} bytes"

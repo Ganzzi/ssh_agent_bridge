@@ -26,7 +26,7 @@ pip install ssh-agent-bridge
 ### From Source
 
 ```bash
-git clone https://github.com/Ganzzi/ssh_agent_bridge.git
+git clone https://github.com/Ganzzi/ssh-agent-bridge.git
 cd ssh-agent-bridge
 pip install -e .
 ```
@@ -470,6 +470,128 @@ async def run_sensitive_command(service, host, username, password):
 2. **Concurrent Commands**: Use separate sessions for parallel operations
 3. **Long-Running Sessions**: Monitor and refresh long-lived sessions
 4. **State Awareness**: Track session state to avoid invalid operations
+
+## Session Management & History
+
+### Listing Active Sessions
+
+View all active sessions for an agent to understand current connections:
+
+```python
+# List only active sessions
+active_sessions = await service.list_sessions(
+    agent_id="my-agent",
+    include_closed=False
+)
+
+for session in active_sessions:
+    print(f"Session: {session.session_id}")
+    print(f"  Host: {session.host}")
+    print(f"  Commands executed: {session.command_count}")
+    print(f"  Last activity: {session.last_activity}")
+```
+
+### Retrieving Session History
+
+Access the message history for debugging and auditing:
+
+```python
+# Get all messages from a session
+history = await service.get_session_history(session_id)
+
+for message in history.messages:
+    timestamp = message.timestamp.strftime("%H:%M:%S")
+    direction = "→" if message.direction == "input" else "←"
+    print(f"[{timestamp}] {direction} {message.content[:60]}")
+
+if history.truncated:
+    print(f"... ({history.total_count - len(history.messages)} more messages)")
+```
+
+### Filtering History
+
+Query history with time ranges and direction filters:
+
+```python
+from datetime import datetime, timedelta
+
+# Get input commands from the last hour
+one_hour_ago = datetime.now() - timedelta(hours=1)
+
+history = await service.get_session_history(
+    session_id,
+    since=one_hour_ago,
+    direction="input",
+    limit=50
+)
+
+print(f"Commands executed in last hour: {len(history.messages)}")
+for message in history.messages:
+    print(f"  $ {message.content}")
+```
+
+### Session Monitoring & Debugging
+
+Track session health and command correlation:
+
+```python
+async def monitor_session(service, agent_id, session_id):
+    """Get current session status and recent activity."""
+    
+    # Get session summary
+    sessions = await service.list_sessions(agent_id, include_closed=True)
+    session_info = next(
+        (s for s in sessions if s.session_id == session_id), 
+        None
+    )
+    
+    if not session_info:
+        print(f"Session {session_id} not found")
+        return
+    
+    print(f"Session Status: {session_info.status}")
+    print(f"Commands executed: {session_info.command_count}")
+    print(f"Total messages: {session_info.message_count}")
+    
+    # Get recent output
+    history = await service.get_session_history(
+        session_id,
+        limit=20,
+        direction="output"
+    )
+    
+    print(f"\nRecent output ({len(history.messages)} messages):")
+    for message in history.messages[-5:]:  # Last 5 messages
+        lines = message.content.split('\n')
+        preview = lines[0][:70] if lines else ""
+        print(f"  {preview}")
+```
+
+### Command Correlation
+
+Link input commands with their outputs using message history:
+
+```python
+# Get full history including both inputs and outputs
+history = await service.get_session_history(session_id, limit=200)
+
+# Group messages by command_id to see input/output pairs
+from collections import defaultdict
+
+command_logs = defaultdict(list)
+for message in history.messages:
+    if message.command_id:
+        command_logs[message.command_id].append(message)
+
+for command_id, messages in list(command_logs.items())[:5]:
+    print(f"\nCommand {command_id}:")
+    for msg in messages:
+        if msg.direction == "input":
+            print(f"  INPUT: {msg.content}")
+        else:
+            preview = msg.content.split('\n')[0][:50]
+            print(f"  OUTPUT: {preview}")
+```
 
 ## Advanced Patterns
 

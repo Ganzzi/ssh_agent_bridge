@@ -238,6 +238,119 @@ async with session.condition:
    - Close channel
    - Remove from registry
 
+## Message History Model
+
+### Overview
+
+Starting in v0.2.0, sessions maintain a structured message history alongside the traditional buffer. This provides:
+
+- **Input/Output Tracking**: All commands and responses recorded
+- **Correlation**: Link command inputs to their outputs via `command_id`
+- **Queryability**: Filter history by time, direction, and limits
+- **Debugging**: Full audit trail of session activity
+- **Backward Compatibility**: Buffer remains for marker detection
+
+### Data Structure
+
+Each `SessionInfo` now contains:
+
+```python
+history: List[Message]              # Structured messages
+history_config: HistoryConfig       # Limits and trim strategy
+created_at: datetime                # Session creation timestamp
+last_activity: datetime             # Most recent activity
+command_count: int                  # Number of commands executed
+pending_command_markers: Dict       # Marker -> command_id mapping
+```
+
+Each `Message` dataclass records:
+
+```python
+@dataclass
+class Message:
+    id: str                         # Unique message ID
+    timestamp: datetime             # When recorded
+    direction: str                  # "input" or "output"
+    content: str                    # Full message text
+    command_id: Optional[str]       # Correlation ID
+    marker: Optional[str]           # Completion marker (outputs)
+```
+
+### Recording Strategy
+
+**Input Messages**:
+- Recorded when `run_command()` or `send_input()` called
+- Include unique `command_id` for correlation
+- Timestamp marks when command was sent
+
+**Output Messages**:
+- Recorded in `_read_stream_loop()` as data arrives
+- Chunked into messages (typically by line breaks)
+- Include marker when command completion detected
+
+**Correlation**:
+- `pending_command_markers` dict maps marker → command_id
+- When marker found in output, output message gets command_id
+- Links input command to its output via shared command_id
+
+### History Limits
+
+`HistoryConfig` controls memory usage:
+
+```python
+@dataclass
+class HistoryConfig:
+    max_messages: int = 1000           # Max messages per session
+    max_message_size: int = 65536      # Max per message (64KB)
+    trim_strategy: str = "oldest"      # oldest|largest|none
+```
+
+**Memory Management**:
+- Default: 1000 messages max (~1MB typical)
+- Each message capped at 64KB
+- Trim strategy removes oldest messages when limit exceeded
+- Configurable per service or per session
+
+**Trim Strategies**:
+- `"oldest"`: Remove oldest messages first (FIFO)
+- `"largest"`: Remove largest messages first (space optimization)
+- `"none"`: No trimming, unbounded growth
+
+### API Methods
+
+**`list_sessions(agent_id, include_closed=False, limit=100)`**:
+- Returns `SessionSummary` for each session
+- Includes `created_at`, `last_activity`, `command_count`, `message_count`
+- Sorted by newest first
+
+**`get_session_history(session_id, limit=100, since=None, direction=None)`**:
+- Returns `SessionHistory` with filtered messages
+- `since` parameter filters by timestamp (inclusive >=)
+- `direction` filters to "input" or "output"
+- `truncated` flag indicates if more messages exist
+
+### Backward Compatibility
+
+The buffer mechanism remains unchanged:
+
+- Buffer still used for marker detection (internal)
+- Marker-based command completion unaffected
+- Existing code continues to work
+- History is optional and additive
+
+**Trade-offs**:
+- Slight memory overhead (history + buffer both stored)
+- Additional CPU for message recording
+- Trade off for structured queryability and audit trail
+
+### Use Cases
+
+1. **Debugging**: Review exact commands sent and responses received
+2. **Auditing**: Full history of who did what and when
+3. **Monitoring**: Session health via activity timestamps
+4. **Correlation**: Link command inputs to outputs for analysis
+5. **Replay**: Reconstruct session state from history
+
 ## Error Handling
 
 ### Exception Hierarchy

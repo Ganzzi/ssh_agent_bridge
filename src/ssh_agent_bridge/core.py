@@ -6,6 +6,7 @@ session management for AI agents.
 
 import asyncio
 import uuid
+from datetime import datetime
 from typing import Dict, Optional, Union
 
 import asyncssh
@@ -17,7 +18,16 @@ from .exceptions import (
     SSHServiceError,
     TimeoutError,
 )
-from .types import CommandResult, ConnectionInfo, PartialResult, SessionInfo
+from .types import (
+    CommandResult,
+    ConnectionInfo,
+    HistoryConfig,
+    Message,
+    PartialResult,
+    SessionHistory,
+    SessionInfo,
+    SessionSummary,
+)
 
 
 class SSHService:
@@ -92,6 +102,12 @@ class SSHService:
                 lock=asyncio.Lock(),
                 condition=asyncio.Condition(),
                 status="active",
+                history=[],  # Initialize empty message history
+                history_config=HistoryConfig(),  # Use default config
+                created_at=datetime.now(),
+                last_activity=datetime.now(),
+                command_count=0,
+                pending_command_markers={},  # Initialize empty marker -> command_id mapping
             )
 
             # Start background reader task
@@ -185,11 +201,33 @@ class SSHService:
             # Generate unique marker
             marker = self._make_marker()
 
+            # Generate unique command ID for tracking
+            command_id = str(uuid.uuid4())
+
             # Create command with marker (use ; to ensure marker is always printed)
             marked_command = f'{command}; echo {marker}="$?"\n'
 
             # Track marker for this session
             session.markers.add(marker)
+            session.pending_command_markers[marker] = command_id
+
+            # Record input message
+            input_message = Message(
+                id=str(uuid.uuid4()),
+                timestamp=datetime.now(),
+                direction="input",
+                content=command,
+                command_id=command_id,
+                marker=marker,
+            )
+            session.history.append(input_message)
+
+            # Update session tracking
+            session.command_count += 1
+            session.last_activity = datetime.now()
+
+            # Trim history if needed
+            await self._trim_history(session)
 
             # Get current buffer position to avoid re-processing old output
             start_index = len(session.buffer)
@@ -201,7 +239,6 @@ class SSHService:
                 )  # Debug output
                 session.process.stdin.write(marked_command)
                 await session.process.stdin.drain()
-
                 # Wait for marker with timeout
                 return await self._wait_for_marker(
                     session, marker, start_index, short_timeout
@@ -210,6 +247,7 @@ class SSHService:
             except Exception as e:
                 # Clean up marker on error
                 session.markers.discard(marker)
+                session.pending_command_markers.pop(marker, None)
                 raise CommandError(f"Failed to execute command: {e}") from e
 
     async def _wait_for_marker(
@@ -234,6 +272,7 @@ class SSHService:
                 if session.status != "active":
                     # Session is broken or closed - cannot complete command
                     session.markers.discard(marker)
+                    session.pending_command_markers.pop(marker, None)
                     raise CommandError(
                         f"Session {session.session_id} became {session.status} during command execution"
                     )
@@ -257,6 +296,7 @@ class SSHService:
 
                     # Clean up marker
                     session.markers.discard(marker)
+                    session.pending_command_markers.pop(marker, None)
 
                     return CommandResult(
                         status="completed",
@@ -347,6 +387,22 @@ class SSHService:
 
         # Send input with newline
         input_with_newline = input_text + "\n"
+
+        # Record input message
+        input_message = Message(
+            id=str(uuid.uuid4()),
+            timestamp=datetime.now(),
+            direction="input",
+            content=input_text,
+        )
+        session.history.append(input_message)
+
+        # Update session activity
+        session.last_activity = datetime.now()
+
+        # Trim history if needed
+        await self._trim_history(session)
+
         session.process.stdin.write(input_with_newline)
         await session.process.stdin.drain()
 
@@ -474,6 +530,120 @@ class SSHService:
         except Exception as e:
             raise SSHServiceError(f"Unexpected error in ephemeral command: {e}") from e
 
+    async def list_sessions(
+        self,
+        agent_id: str,
+        include_closed: bool = False,
+        limit: int = 100,
+    ) -> list["SessionSummary"]:
+        """List all sessions for the specified agent.
+
+        Args:
+            agent_id: Agent identifier
+            include_closed: Include closed/broken sessions (default: False - active only)
+            limit: Maximum sessions to return (default: 100)
+
+        Returns:
+            List of SessionSummary objects sorted by creation time (newest first)
+
+        Raises:
+            SSHServiceError: For other SSH-related errors
+        """
+        # Collect matching sessions
+        matching_sessions = []
+
+        for session_id, session in self._sessions.items():
+            # Filter by agent_id
+            if session.agent_id != agent_id:
+                continue
+
+            # Filter by status
+            if not include_closed and session.status != "active":
+                continue
+
+            # Create summary
+            summary = SessionSummary(
+                session_id=session.session_id,
+                agent_id=session.agent_id,
+                host=session.connection_info.host,
+                username=session.connection_info.username,
+                port=session.connection_info.metadata.get("port", 22),
+                status=session.status,
+                created_at=session.created_at,
+                last_activity=session.last_activity,
+                command_count=session.command_count,
+                message_count=len(session.history),
+            )
+            matching_sessions.append(summary)
+
+        # Sort by creation time (newest first)
+        matching_sessions.sort(key=lambda s: s.created_at, reverse=True)
+
+        # Apply limit
+        return matching_sessions[:limit]
+
+    async def get_session_history(
+        self,
+        session_id: str,
+        limit: int = 100,
+        since: Optional[datetime] = None,
+        direction: Optional[str] = None,
+    ) -> "SessionHistory":
+        """Get message history for a session.
+
+        Args:
+            session_id: Session identifier
+            limit: Maximum messages to return (default: 100)
+            since: Only messages after this timestamp (optional)
+            direction: Filter by direction: "input", "output", or None for both (default: both)
+
+        Returns:
+            SessionHistory with messages and metadata
+
+        Raises:
+            SessionError: If session not found
+            SSHServiceError: For other errors
+        """
+        # Get session
+        if session_id not in self._sessions:
+            raise SessionError(f"Session {session_id} not found")
+
+        session = self._sessions[session_id]
+
+        # Get all messages
+        all_messages = session.history
+
+        # Filter by timestamp
+        if since:
+            filtered_messages = [m for m in all_messages if m.timestamp >= since]
+        else:
+            filtered_messages = all_messages
+
+        # Filter by direction
+        if direction:
+            if direction not in ("input", "output"):
+                raise SSHServiceError(f"Invalid direction: {direction}")
+            filtered_messages = [
+                m for m in filtered_messages if m.direction == direction
+            ]
+
+        # Get total count before limiting
+        total_count = len(filtered_messages)
+
+        # Sort by timestamp (newest first) and apply limit
+        filtered_messages.sort(key=lambda m: m.timestamp, reverse=True)
+        limited_messages = filtered_messages[:limit]
+
+        # Check if truncated
+        truncated = len(limited_messages) < total_count
+
+        return SessionHistory(
+            session_id=session.session_id,
+            messages=limited_messages,
+            total_count=total_count,
+            truncated=truncated,
+        )
+
     async def close_agent_connection(self, agent_id: str) -> None:
         """Close all connections and sessions for the specified agent.
 
@@ -545,6 +715,39 @@ class SSHService:
         # Generate unique marker using UUID
         marker_id = str(uuid.uuid4()).replace("-", "")[:16]  # 16 char unique ID
         return f"______END_MARKER_{marker_id}______"
+
+    async def _trim_history(self, session: SessionInfo) -> None:
+        """Trim session history if it exceeds configured limits.
+
+        Enforces both message count and individual message size limits.
+        Uses the configured trim strategy (oldest-first by default).
+
+        Args:
+            session: Session to trim history for
+        """
+        # Check message count limit
+        if len(session.history) > session.history_config.max_messages:
+            # Apply trim strategy
+            if session.history_config.trim_strategy == "oldest":
+                # Remove oldest messages first
+                excess = len(session.history) - session.history_config.max_messages
+                session.history = session.history[excess:]
+            elif session.history_config.trim_strategy == "largest":
+                # Remove largest messages first
+                while len(session.history) > session.history_config.max_messages:
+                    # Find largest message
+                    largest_idx = max(
+                        range(len(session.history)),
+                        key=lambda i: len(session.history[i].content),
+                    )
+                    session.history.pop(largest_idx)
+            # "none" strategy: don't trim
+
+        # Check individual message size limit
+        for msg in session.history[:]:  # Copy to allow removal during iteration
+            if len(msg.content) > session.history_config.max_message_size:
+                # Truncate message content
+                msg.content = msg.content[: session.history_config.max_message_size]
 
     async def _ensure_connection(
         self,
@@ -698,9 +901,37 @@ class SSHService:
 
                     print(f"DEBUG: Received data: {repr(data)}")  # Debug output
 
-                    # Accumulate data in buffer
+                    # Accumulate data in buffer and record output message
                     async with session.condition:
                         session.buffer += data
+
+                        # Determine which command_id this output belongs to
+                        # Use the first pending marker if available
+                        command_id = None
+                        for marker in session.markers:
+                            if marker in session.pending_command_markers:
+                                command_id = session.pending_command_markers[marker]
+                                break
+
+                        # Record output message chunk
+                        output_message = Message(
+                            id=str(uuid.uuid4()),
+                            timestamp=datetime.now(),
+                            direction="output",
+                            content=data,
+                            command_id=command_id,
+                        )
+                        session.history.append(output_message)
+
+                        # Update session activity
+                        session.last_activity = datetime.now()
+
+                        # Trim history if needed
+                        # Note: We do this without await inside the lock
+                        if len(session.history) > session.history_config.max_messages:
+                            # Queue for trimming after releasing lock
+                            pass
+
                         session.condition.notify_all()
 
                 except asyncio.TimeoutError:

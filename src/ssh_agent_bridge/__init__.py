@@ -13,7 +13,16 @@ from .exceptions import (
     SSHServiceError,
     TimeoutError,
 )
-from .types import CommandResult, ConnectionInfo, PartialResult, SessionInfo
+from .types import (
+    CommandResult,
+    ConnectionInfo,
+    HistoryConfig,
+    Message,
+    PartialResult,
+    SessionHistory,
+    SessionInfo,
+    SessionSummary,
+)
 
 __version__ = "0.1.1"
 __all__ = [
@@ -27,4 +36,8 @@ __all__ = [
     "SessionInfo",
     "CommandResult",
     "PartialResult",
+    "Message",
+    "SessionHistory",
+    "SessionSummary",
+    "HistoryConfig",
 ]

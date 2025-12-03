@@ -202,6 +202,54 @@ async def shutdown() -> None
 
 Shutdown the service and clean up all resources.
 
+### Session Listing & History
+
+#### list_sessions
+
+```python
+async def list_sessions(
+    agent_id: str,
+    include_closed: bool = False,
+    limit: int = 100
+) -> List[SessionSummary]
+```
+
+List all sessions for the specified agent.
+
+**Parameters:**
+- `agent_id` (str): Agent identifier
+- `include_closed` (bool): Include closed/broken sessions (default: False)
+- `limit` (int): Maximum sessions to return (default: 100)
+
+**Returns:** List of `SessionSummary` objects sorted by newest first
+
+**Raises:**
+- `SSHServiceError`: If service not initialized
+
+#### get_session_history
+
+```python
+async def get_session_history(
+    session_id: str,
+    limit: int = 100,
+    since: Optional[datetime] = None,
+    direction: Optional[str] = None
+) -> SessionHistory
+```
+
+Get message history for a session.
+
+**Parameters:**
+- `session_id` (str): Session identifier
+- `limit` (int): Maximum messages to return (default: 100)
+- `since` (Optional[datetime]): Only messages after this timestamp (default: None)
+- `direction` (Optional[str]): Filter by direction - "input", "output", or None for both (default: None)
+
+**Returns:** `SessionHistory` with messages and metadata
+
+**Raises:**
+- `SessionError`: If session doesn't exist
+
 ## Data Types
 
 ### CommandResult
@@ -224,6 +272,65 @@ class PartialResult:
     stdout: str = ""           # Output received so far
     pending_marker: str = ""   # Marker for polling completion
 ```
+
+### Message
+
+```python
+@dataclass
+class Message:
+    id: str                         # Unique message identifier
+    timestamp: datetime             # When message was recorded
+    direction: str                  # "input" or "output"
+    content: str                    # Message content
+    command_id: Optional[str] = None  # Correlation ID for command pairs
+    marker: Optional[str] = None    # Command completion marker (output only)
+```
+
+Represents a single message in the session history. Each command input and its corresponding output messages are correlated via `command_id`.
+
+### SessionHistory
+
+```python
+@dataclass
+class SessionHistory:
+    session_id: str              # Session identifier
+    messages: List[Message]      # Messages (may be filtered/limited)
+    total_count: int             # Total messages in history
+    truncated: bool              # True if messages were truncated
+```
+
+Contains the message history for a session. When `truncated` is True, `total_count` indicates how many more messages exist beyond the returned `messages` list.
+
+### SessionSummary
+
+```python
+@dataclass
+class SessionSummary:
+    session_id: str      # Unique session identifier
+    agent_id: str        # Agent that created this session
+    host: str            # SSH host
+    username: str        # SSH username
+    port: int            # SSH port
+    status: str          # "active", "closed", or "broken"
+    created_at: datetime # When session was created
+    last_activity: datetime  # Last activity timestamp
+    command_count: int   # Number of commands executed
+    message_count: int   # Total messages in history
+```
+
+Summary information for a session, useful for listing and monitoring sessions.
+
+### HistoryConfig
+
+```python
+@dataclass
+class HistoryConfig:
+    max_messages: int = 1000       # Maximum messages per session
+    max_message_size: int = 65536  # Maximum size per message (64KB)
+    trim_strategy: str = "oldest"  # "oldest", "largest", or "none"
+```
+
+Configuration for message history limits and behavior. Prevents unbounded memory growth in long-lived sessions.
 
 ## Exceptions
 
