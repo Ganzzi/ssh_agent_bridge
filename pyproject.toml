@@ -130,8 +130,10 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 markers = [
-    "asyncio: marks tests as async (using pytest-asyncio)",
+    "unit: marks tests as unit tests",
     "integration: marks tests as integration tests",
+    "e2e: marks tests as end-to-end tests",
+    "asyncio: marks tests as async (using pytest-asyncio)",
     "slow: marks tests as slow running",
     "fast: marks tests as fast unit tests (no I/O)",
     "asyncio_io: marks tests as async with I/O operations",
