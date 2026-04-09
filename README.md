@@ -140,19 +140,22 @@ black src/
 ### Testing
 
 ```bash
-# Run all tests (55/55 core tests PASS - 100% pass rate)
-uv run pytest tests/test_core.py -v
+# Run all unit tests (PR gate - no external dependencies)
+uv run pytest -m "not integration and not e2e" -q
 
-# Run with coverage (86% coverage, exceeds 80% target)
-uv run pytest tests/test_core.py --cov=src/ssh_agent_bridge --cov-report=html
+# Run all tests (including integration/E2E which require SSH server)
+uv run pytest -q
 
-# Run core unit tests
-uv run pytest tests/test_core.py::TestDataTypes tests/test_core.py::TestExceptions tests/test_core.py::TestSSHService tests/test_core.py::TestConnectionManagement tests/test_core.py::TestSessionLifecycle tests/test_core.py::TestCommandExecution -v
+# Run with coverage
+uv run pytest -m "not integration and not e2e" --cov=src/ssh_agent_bridge --cov-report=html
+
+# Run specific test modules
+uv run pytest tests/unit/test_connection_pool.py -v
+uv run pytest tests/unit/test_session_lifecycle.py -v
 ```
 
 For detailed testing information, see:
-- **[TEST_RUNNER_STRATEGY.md](tests/TEST_RUNNER_STRATEGY.md)** - Safe test execution guide
-- **[TESTING_PATTERNS.md](tests/TESTING_PATTERNS.md)** - Patterns and anti-patterns
+- **[docs/development.md](docs/development.md)** - Complete development and testing guide
 
 ## Project Status
 

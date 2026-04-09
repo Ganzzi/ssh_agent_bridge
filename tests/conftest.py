@@ -46,9 +46,15 @@ def mock_asyncssh():
     # Mock process with properly configured stdout/stderr
     mock_process = AsyncMock()
 
-    # Setup stdout.read() to return empty (EOF) to avoid hanging
+    # Setup stdout.read() to block longer than read-loop timeout by default.
+    # This keeps sessions active unless a specific test overrides the stream.
+    async def _slow_read(_size=8192):
+        await asyncio.sleep(1)
+        return b""
+
     mock_stdout = AsyncMock()
-    mock_stdout.read = AsyncMock(return_value=b"")  # Return empty bytes for EOF
+    mock_stdout.read = AsyncMock(side_effect=_slow_read)
+    mock_stdout.readline = AsyncMock(side_effect=_slow_read)
     mock_process.stdout = mock_stdout
 
     # Setup stderr similarly

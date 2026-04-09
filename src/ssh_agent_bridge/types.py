@@ -89,6 +89,12 @@ class CommandResult:
     exit_code: int = 0
     stdout: str = ""
     stderr: Optional[str] = None
+    truncated: bool = False
+
+    @property
+    def output(self) -> str:
+        """Backward-compatible alias for stdout."""
+        return self.stdout
 
 
 @dataclass
@@ -104,6 +110,11 @@ class PartialResult:
     status: str = "partial"
     stdout: str = ""
     pending_marker: str = ""
+
+    @property
+    def output(self) -> str:
+        """Backward-compatible alias for stdout."""
+        return self.stdout
 
 
 @dataclass

@@ -125,14 +125,14 @@ max-line-length = 88
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-ra -q --strict-markers --strict-config"
-testpaths = ["tests"]
+testpaths = ["tests/unit", "tests/integration", "tests/e2e"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 markers = [
-    "unit: marks tests as unit tests",
-    "integration: marks tests as integration tests",
-    "e2e: marks tests as end-to-end tests",
+    "unit: no external dependencies",
+    "integration: requires SSH server / infra",
+    "e2e: full session workflows",
     "asyncio: marks tests as async (using pytest-asyncio)",
     "slow: marks tests as slow running",
     "fast: marks tests as fast unit tests (no I/O)",
